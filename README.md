@@ -2,7 +2,7 @@ TweetSubs
 =========
 A frontend to launch VLC, follow someone on Twitter, and display any live @tweets mentioning that account as subtitles in VLC.
 
-Geographically separated people can schedule a video to play simultaneously, follow the same account, compose tweets, and see each other's commentary. (Example: [MockTM Events][http://twitter.com/MockTM])
+Geographically separated people can schedule a video to play simultaneously, follow the same account, compose tweets, and see each other's commentary. (Example: [MockTM Events](http://twitter.com/MockTM))
 
 
 Requirements
