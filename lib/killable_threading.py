@@ -56,59 +56,6 @@ class KillableThread(threading.Thread):
     self.wake_up()
 
 
-class QueueableThread(KillableThread):
-  """A base class for threads that can be sent delayed instructions."""
-  def __init__(self):
-    KillableThread.__init__(self)
-
-    self.ACTIONS = ["ACTION_KILL_THREAD"]
-    for x in self.ACTIONS: setattr(self, x, x)
-
-    self._event_queue = Queue.Queue()
-
-  def process_event_queue(self, queue_block=True, queue_timeout=0.5):
-    """Processes events queued via invoke_later().
-    Subclasses should call this at least once in their run() loops.
-    To return immediately, use (block=False,timeout=None),
-    not (timeout=0).
-
-    Timeouts on hundreds of objects might eat CPU on some platforms.
-    http://blog.codedstructure.net/2011/02/concurrent-queueget-with-timeouts-eats.html
-    """
-    action, arg_dict = None, None
-    try:
-      action, arg_dict = self._event_queue.get(queue_block, queue_timeout)
-    except (Queue.Empty):
-      return
-
-    self.process_event(action, arg_dict)
-
-  def process_event(self, action, arg_dict):
-    """Processes an event that was popped off the queue.
-    When subclasses override this, they should call the
-    super's method near the top, and check the result.
-
-    ACTION_KILL_THREAD: Sets self.keep_alive = False. No args.
-
-    :returns: True if the event may be processed further, False if it should be consumed.
-    """
-    if (action == self.ACTION_KILL_THREAD):
-      self.keep_alive = False
-      return True
-
-    return True
-
-  def invoke_later(self, action, arg_dict):
-    """Schedules an action to occur in this thread. (thread-safe)
-
-    :param action: One of the ACTION_* constants.
-                   Subclasses are free to accept non-string types (funcs).
-    :arg_dict: A dict of args relevant to the action.
-               Use {} instead of None when no args are needed.
-    """
-    self._event_queue.put((action, arg_dict))
-
-
 class StreamThread(KillableThread):
   """Consumes a length-DELIMITED live twitter stream (filter.json/sample.json).
   ---
