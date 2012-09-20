@@ -84,59 +84,76 @@ except (Exception) as err:
 
 
 
-class VLCSocketThread(killable_threading.TweetsThread):
-  """A thread that sends subtitle/play commands to VLC over a socket."""
+class VLCControl():
+  """Sends commands to VLC over a socket to a lua interface."""
+  def __init__(self):
+    self._socket_lock = threading.RLock()
+    self._vlc_socket = None
+    self._failure_func = None
 
-  def __init__(self, sleep_interval, expiration, stream_lines, vlc_socket, vlc_port):
-    killable_threading.TweetsThread.__init__(self, sleep_interval, expiration, stream_lines)
-    # Pseudo enum constants.
-    self.ACTIONS = ["ACTION_PLAY"]
-    for x in self.ACTIONS: setattr(self, x, x)
+  def set_socket(self, vlc_socket):
+    """Sets the socket to communicate with. (thread-safe)
+    Any existing socket will be closed.
 
-    self.vlc_socket = vlc_socket
-    self.vlc_port = vlc_port
+    When the socket is None (default) communication
+    methods do nothing.
+    """
+    with self._socket_lock:
+      if (self._vlc_socket is not None):
+        self._vlc_socket.close()
+      self._vlc_socket = vlc_socket
 
-  def run(self):
-    failed_connects = 0
-    while (self.keep_alive):
-      self.nap(2)
-      if (not self.keep_alive): break
+  def play(self):
+    """Tells VLC to play stopped/paused meda."""
+    with self._socket_lock:
+      if (self._vlc_socket is None): return
+
       try:
-        self.vlc_socket.connect(('127.0.0.1', self.vlc_port))
-        break
-      except (Exception) as err:
-        failed_connects += 1
-        if (failed_connects > 7):
-          logging.error("%s gave up repeated attempts to connect to VLC on port %s." % (self.__class__.__name__, self.vlc_port))
-          self.keep_alive = False
-    if (not self.keep_alive): return
-    killable_threading.TweetsThread.run(self)
-
-  def show_message(self, text):
-    # The lua VLC interface is line-oriented.
-    text = re.sub("\n", "\\\\n", text)
-    try:
-      self.vlc_socket.sendall("osd_msg %s\n" % text)
-    except (Exception) as err:
-      self.keep_alive = False
-      logging.error("%s failed to send VLC an osd_msg command: %s" % (self.__class__.__name__, str(err)))
-      return
-
-  def process_event_queue(self, queue_timeout=0.5):
-    action_name, arg_dict = None, None
-    try:
-      queue_block = True if (queue_timeout is not None and queue_timeout > 0) else False
-      action_name, arg_dict = self.event_queue.get(queue_block, queue_timeout)
-    except (Queue.Empty):
-      return
-
-    if (action_name == self.ACTION_PLAY):
-      try:
-        self.vlc_socket.sendall("play\n")
+        self._vlc_socket.sendall("play\n")
       except (Exception) as err:
         self.keep_alive = False
         logging.error("%s failed to send VLC a play command: %s" % (self.__class__.__name__, str(err)))
         return
+
+  def show_message(self, text):
+    """Show an osd message over video. (thread-safe)"""
+    with self._socket_lock:
+      if (self._vlc_socket is None): return
+
+      # The lua VLC interface is line-oriented.
+      text = re.sub("\n", "\\\\n", text)
+
+      try:
+        self._vlc_socket.sendall("osd_msg %s\n" % text)
+      except (Exception) as err:
+        logging.error("%s failed to send VLC an osd_msg command: %s" % (self.__class__.__name__, str(err)))
+        self.set_socket(None)
+        if (self._failure_func is not None):
+          logging.debug("%s is calling its failure func..." % self.__class__.__name__)
+          self._failure_func({})
+        return
+
+  def set_failure_callback(self, failure_func):
+    """Sets an optional function to call when the socket dies.
+    It will receive one arg, an empty dict.
+    """
+    self._failure_func = failure_func
+
+
+class VLCListenerControl(VLCControl):
+  """A VLCControl subclass with TweetSubs-specific listener methods."""
+  def __init__(self):
+    VLCControl.__init__(self)
+
+  def on_tweet(self, user_str, msg_str, tweet_json):
+    """Responds to incoming tweets. (thread-safe)
+    See: killable_threading.TweetsThread.add_tweet_listener().
+
+    :param user_str: The cleaned "screen_name" of the user.
+    :param msg_str: The cleaned "text" of the tweet.
+    :param tweet_json: The raw json object.
+    """
+    self.show_message("%s: %s" % (user_str, msg_str))
 
 
 class LogicThread(killable_threading.KillableThread):
@@ -147,15 +164,13 @@ class LogicThread(killable_threading.KillableThread):
                     "ACTION_LOOKUP_USER",
                     "ACTION_FOLLOW_USER", "ACTION_FOLLOW_SAMPLE",
                     "ACTION_SPAWN_VLC", "ACTION_SEND_TWEET",
-                    "ACTION_PLAY",
+                    "ACTION_SET_VLC_SOCKET", "ACTION_PLAY",
                     "ACTION_REFOLLOW"]
     for x in self.ACTIONS: setattr(self, x, x)
 
     self.PHASES = ["PHASE_INIT",
                    "PHASE_LOAD_CREDS", "PHASE_PIN_AUTH", "PHASE_AUTHORIZED",
                    "PHASE_SET_COUNTDOWN",
-                   "PHASE_FOLLOW_USER", "PHASE_FOLLOW_SAMPLE",
-                   "PHASE_SPAWN_VLC",
                    "PHASE_COMPOSE", "PHASE_COMPOSE_NERFED"]
     for x in self.PHASES: setattr(self, x, x)
 
@@ -172,9 +187,17 @@ class LogicThread(killable_threading.KillableThread):
     try:
       self.stream_lines = killable_threading.StreamLines()
       self.stream_thread = None
-      self.vlcsock_thread = None
       self.vlc_proc = None
       self.countdown_to_time = None
+
+      self.tweets_thread = killable_threading.TweetsThread(global_config.tweet_check_interval, global_config.tweet_expiration, self.stream_lines)
+      self.tweets_thread.start()
+
+      def vlc_control_failure_callback(arg_dict):
+        self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: Failed to communicate with VLC."})
+        self.invoke_later(self.ACTION_SET_VLC_SOCKET, {"socket":None})
+      self.vlc_control = VLCListenerControl()
+      self.vlc_control.set_failure_callback(vlc_control_failure_callback)
 
       self.client = pytwit.TwitterOAuthClient()
       self.consumer = oauth.OAuthConsumer(global_config.CONSUMER_KEY, global_config.CONSUMER_SECRET)
@@ -212,7 +235,6 @@ class LogicThread(killable_threading.KillableThread):
       while (self.keep_alive):
         self.process_event_queue(0.5)  # Includes some blocking.
         if (not self.keep_alive): break
-        if (self.vlcsock_thread and not self.vlcsock_thread.isAlive()): break
         if (self.vlc_proc and self.vlc_proc.poll() is not None): break
         if (self.mygui.done is True): break
 
@@ -246,6 +268,7 @@ class LogicThread(killable_threading.KillableThread):
   def process_event_queue(self, queue_timeout=0.5):
     """Processes events queued via invoke_later().
 
+    Most actions depend on the current PHASE and run in order.
     ACTION_LOAD_CREDS()
      | \ACTION_PIN_AUTH(req_token, verifier_string)
      |   |
@@ -258,7 +281,9 @@ class LogicThread(killable_threading.KillableThread):
     ACTION_SPAWN_VLC()       --/
     ACTION_SEND_TWEET(text)
     ---
-    ACTION_REFOLLOW
+    The following don't have timing restrictions:
+    ACTION_SET_VLC_SOCKET(), when a socket to VLC (dis)connected.
+    ACTION_REFOLLOW(), when a StreamThread disconnects.
     """
     action_name, arg_dict = None, None
     try:
@@ -418,7 +443,7 @@ class LogicThread(killable_threading.KillableThread):
           self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: User following failed weirdly."})
           return
 
-      self.phase = self.PHASE_FOLLOW_USER
+      self.phase = self.PHASE_COMPOSE
       self.stream_lines.clear()
       self.followed_user = None
       oauth_request = oauth.OAuthRequest.from_consumer_and_token(self.consumer, token=self.token, http_method='POST', http_url=self.client.FOLLOW_USER_URL, parameters={"follow":arg_dict["user_id"],"delimited":"length"})
@@ -431,6 +456,16 @@ class LogicThread(killable_threading.KillableThread):
         self.stream_thread.set_failure_callback(self.follow_failure_callback)
         self.stream_thread.start()
         self.followed_user = {"user_type":"user", "user_name":arg_dict["user_name"], "user_id":arg_dict["user_id"]}
+
+        def next_func(arg_dict):
+          self.invoke_later(self.ACTION_SEND_TWEET, arg_dict)
+
+        def text_clean_func(text):
+          return self.client.get_sanitized_tweet(text)
+
+        self.mygui.invoke_later(self.mygui.ACTION_SWITCH_COMPOSE, {"next_func":next_func,"text_clean_func":text_clean_func,"max_length":self.client.MAX_TWEET_LENGTH,"src_user_name":self.src_user["user_name"],"countdown_to_time":self.countdown_to_time})
+        self.mygui.invoke_later(self.mygui.ACTION_COMPOSE_TEXT, {"text":("@%s " % self.followed_user["user_name"])})
+
         self.invoke_later(self.ACTION_SPAWN_VLC, {})
       except (pytwit.TwitterException) as err:
         logging.error("%s" % str(err))
@@ -444,7 +479,7 @@ class LogicThread(killable_threading.KillableThread):
     elif (action_name == self.ACTION_FOLLOW_SAMPLE):
       if (self.phase not in [self.PHASE_SET_COUNTDOWN]): return
 
-      self.phase = self.PHASE_FOLLOW_SAMPLE
+      self.phase = self.PHASE_COMPOSE_NERFED
       self.stream_lines.clear()
       self.followed_user = None
       oauth_request = oauth.OAuthRequest.from_consumer_and_token(self.consumer, token=self.token, http_method='POST', http_url=self.client.FOLLOW_SAMPLE_URL, parameters={"delimited":"length"})
@@ -457,6 +492,9 @@ class LogicThread(killable_threading.KillableThread):
         self.stream_thread.set_failure_callback(self.follow_failure_callback)
         self.stream_thread.start()
         self.followed_user = {"user_type":"sample"}
+
+        self.mygui.invoke_later(self.mygui.ACTION_SWITCH_COMPOSE_NERFED, {"src_user_name":self.src_user["user_name"],"countdown_to_time":self.countdown_to_time})
+
         self.invoke_later(self.ACTION_SPAWN_VLC, {})
       except (pytwit.TwitterException) as err:
         logging.error("%s" % str(err))
@@ -505,35 +543,35 @@ class LogicThread(killable_threading.KillableThread):
 
 
     elif (action_name == self.ACTION_SPAWN_VLC):
-      if (self.phase not in [self.PHASE_FOLLOW_USER, self.PHASE_FOLLOW_SAMPLE]): return
-      prev_phase = self.phase
-
-      self.phase = self.PHASE_SPAWN_VLC
       logging.info("Spawning VLC.")
       self.vlc_proc = spawn_vlc(self.vlc_path, global_config.INTF_LUA_NAME, global_config.vlc_port, global_config.osd_duration)
       self.cleanup_handler.add_proc(self.vlc_proc)
 
       logging.info("Connecting to VLC on port %d." % global_config.vlc_port)
-      vlc_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-      self.vlcsock_thread = VLCSocketThread(global_config.tweet_check_interval, global_config.tweet_expiration, self.stream_lines, vlc_socket, global_config.vlc_port)
-      self.vlcsock_thread.start()
-      self.cleanup_handler.add_thread(self.vlcsock_thread)
-      self.cleanup_handler.add_socket(vlc_socket)
+      def success_callback(arg_dict):
+        self.invoke_later(self.ACTION_SET_VLC_SOCKET, {"socket":arg_dict["socket"]})
+      def failure_callback(arg_dict):
+        self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: Failed to connect to VLC."})
 
-      src_user_name = self.src_user["user_name"]
-      if (self.followed_user and self.followed_user["user_type"] == "user"):
-        def next_func(arg_dict):
-          self.invoke_later(self.ACTION_SEND_TWEET, arg_dict)
+      connect_thread = killable_threading.SocketConnectThread("VLC", "127.0.0.1", global_config.vlc_port, 7, 2)
+      connect_thread.set_success_callback(success_callback)
+      connect_thread.set_failure_callback(failure_callback)
+      connect_thread.start()
+      self.cleanup_handler.add_thread(connect_thread)
+      self.cleanup_handler.add_socket(connect_thread._socket)
 
-        def text_clean_func(text):
-          return self.client.get_sanitized_tweet(text)
 
-        self.mygui.invoke_later(self.mygui.ACTION_SWITCH_COMPOSE, {"next_func":next_func,"text_clean_func":text_clean_func,"max_length":self.client.MAX_TWEET_LENGTH,"src_user_name":src_user_name,"countdown_to_time":self.countdown_to_time})
-        self.mygui.invoke_later(self.mygui.ACTION_COMPOSE_TEXT, {"text":("@%s " % self.followed_user["user_name"])})
-        self.phase = self.PHASE_COMPOSE
+    elif (action_name == self.ACTION_SET_VLC_SOCKET):
+      for arg, is_bad in [("socket", (lambda x:False))]:
+        if (arg not in arg_dict or is_bad(arg)):
+          logging.error("Bad/missing %s arg queued to %s %s." % (arg, self.__class__.__name__, action_name))
+          return
+
+      self.vlc_control.set_socket(arg_dict["socket"])
+      if (arg_dict["socket"] is not None):
+        self.tweets_thread.add_tweet_listener(self.vlc_control)
       else:
-        self.mygui.invoke_later(self.mygui.ACTION_SWITCH_COMPOSE_NERFED, {"src_user_name":src_user_name,"countdown_to_time":self.countdown_to_time})
-        self.phase = self.PHASE_COMPOSE_NERFED
+        self.tweets_thread.remove_tweet_listener(self.vlc_control)
 
 
     elif (action_name == self.ACTION_SEND_TWEET):
@@ -566,14 +604,10 @@ class LogicThread(killable_threading.KillableThread):
         self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: Tweet sending failed."})
 
     elif (action_name == self.ACTION_PLAY):
-      if (self.vlcsock_thread is None or self.vlcsock_thread.keep_alive is False):
-        logging.error("%s %s was queued, but no TweetsThread is running." % (self.__class__.__name__, action_name))
-        self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: Scheduled playing failed weirdly."})
-        return
-
-      self.vlcsock_thread.invoke_later(self.vlcsock_thread.ACTION_PLAY, {})
+      self.vlc_control.play()
 
   def invoke_later(self, action_name, arg_dict):
+    """Schedules an action to occur in this thread (thread-safe)."""
     self.event_queue.put((action_name, arg_dict))
 
 

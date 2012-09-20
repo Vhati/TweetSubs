@@ -12,10 +12,101 @@ from lib import common
 
 
 class KillableThread(threading.Thread):
-  """A base class for threads that die when self.keep_alive is False."""
+  """A base class for threads that die on command.
+  Subclasses' run() loops test if self.keep_alive is False.
+
+  Instead of sleeping, they should call nap().
+
+  And any subclass method, meant to be called by other
+  threads, that interrupts a nap() should include wake_up().
+  """
   def __init__(self):
     threading.Thread.__init__(self)
+    self.snooze_cond = threading.Condition()
     self.keep_alive = True
+
+  def nap(self, seconds):
+    """Sleep but stay responsive.
+
+    This sleep is preempted by a call to wake_up().
+
+    According to this site, timeouts for Queues,
+    Conditions, etc., can waste CPU cycles polling
+    excessively often (20x/sec). But you'd need
+    hundreds of threads to have a problem.
+    http://blog.codedstructure.net/2011/02/concurrent-queueget-with-timeouts-eats.html
+
+    :param seconds: How long to wait. Or None for indefinite.
+    """
+    with self.snooze_cond:
+      self.snooze_cond.wait(seconds)
+
+  def wake_up(self):
+    """Interrupts a nap(). (thread-safe)"""
+    with self.snooze_cond:
+      self.snooze_cond.notify()
+
+  def stop_living(self):
+    """Tells this thread to die. (thread-safe)
+
+    This method is preferred over setting keep_alive directly,
+    for the benefit of threads that need to sleep with interruption.
+    """
+    self.keep_alive = False
+    self.wake_up()
+
+
+class QueueableThread(KillableThread):
+  """A base class for threads that can be sent delayed instructions."""
+  def __init__(self):
+    KillableThread.__init__(self)
+
+    self.ACTIONS = ["ACTION_KILL_THREAD"]
+    for x in self.ACTIONS: setattr(self, x, x)
+
+    self._event_queue = Queue.Queue()
+
+  def process_event_queue(self, queue_block=True, queue_timeout=0.5):
+    """Processes events queued via invoke_later().
+    Subclasses should call this at least once in their run() loops.
+    To return immediately, use (block=False,timeout=None),
+    not (timeout=0).
+
+    Timeouts on hundreds of objects might eat CPU on some platforms.
+    http://blog.codedstructure.net/2011/02/concurrent-queueget-with-timeouts-eats.html
+    """
+    action, arg_dict = None, None
+    try:
+      action, arg_dict = self._event_queue.get(queue_block, queue_timeout)
+    except (Queue.Empty):
+      return
+
+    self.process_event(action, arg_dict)
+
+  def process_event(self, action, arg_dict):
+    """Processes an event that was popped off the queue.
+    When subclasses override this, they should call the
+    super's method near the top, and check the result.
+
+    ACTION_KILL_THREAD: Sets self.keep_alive = False. No args.
+
+    :returns: True if the event may be processed further, False if it should be consumed.
+    """
+    if (action == self.ACTION_KILL_THREAD):
+      self.keep_alive = False
+      return True
+
+    return True
+
+  def invoke_later(self, action, arg_dict):
+    """Schedules an action to occur in this thread. (thread-safe)
+
+    :param action: One of the ACTION_* constants.
+                   Subclasses are free to accept non-string types (funcs).
+    :arg_dict: A dict of args relevant to the action.
+               Use {} instead of None when no args are needed.
+    """
+    self._event_queue.put((action, arg_dict))
 
 
 class StreamThread(KillableThread):
@@ -28,23 +119,26 @@ class StreamThread(KillableThread):
 
   Non-delimited streams only lack the number line, but CPU usage spikes on busy
   streams, reading 1 byte at a time.
+
+  Because select() proved unreliable, this thread blocks awaiting chars.
+  Because blocking may stall shutdown, this is a daemon thread.
   """
 
   def __init__(self, connection, response, stream_lines):
     KillableThread.__init__(self)
-    self.connection = connection
-    self.response = response
-    self.stream_lines = stream_lines
-    self.is_length_delimited = True  # I don't feel like exposing this as an arg.
-    self.failure_func = None
+    self._connection = connection
+    self._response = response
+    self._stream_lines = stream_lines
+    self._is_length_delimited = True  # I don't feel like exposing this as an arg.
+    self._failure_func = None
     self.daemon = True  # Workaround for select()'s lies.
 
   def run(self):
-    in_delim = self.is_length_delimited
+    in_delim = self._is_length_delimited
     block_size = 1  # Unless delimiter says so, expect no more than 1 readable byte.
     delim_buffers = []
-    #read_objs = [self.response.fp.fileno()]
-    #read_objs = [self.connection.sock]
+    #read_objs = [self._response.fp.fileno()]
+    #read_objs = [self._connection.sock]
     block = None
 
     prev = None
@@ -63,21 +157,21 @@ class StreamThread(KillableThread):
         do_read = bool(r)
       except (socket.error) as err:
         logging.error("%s ended. Reason: %s" % (self.__class__.__name__, str(err)))
-        if (self.keep_alive and self.failure_func is not None):
+        if (self.keep_alive and self._failure_func is not None):
           logging.debug("%s is calling its failure func..." % self.__class__.__name__)
-          self.failure_func({})
+          self._failure_func({})
         self.keep_alive = False
         continue
 
       if (do_read):
         try:
-          block = self.response.read(block_size)
-          #block = self.connection.sock.recv(block_size)
+          block = self._response.read(block_size)
+          #block = self._connection.sock.recv(block_size)
         except (Exception) as err:
           logging.error("%s ended. Reason: %s" % (self.__class__.__name__, str(err)))
-          if (self.keep_alive and self.failure_func is not None):
+          if (self.keep_alive and self._failure_func is not None):
             logging.debug("%s is calling its failure func..." % self.__class__.__name__)
-            self.failure_func({})
+            self._failure_func({})
           self.keep_alive = False
           continue
         if (not self.keep_alive): break
@@ -101,18 +195,20 @@ class StreamThread(KillableThread):
 
             del delim_buffers[:]
         else:
-          self.stream_lines.append_block(block)
-          if (self.is_length_delimited):  # in_delim stays false if not delimited.
+          self._stream_lines.append_block(block)
+          if (self._is_length_delimited):  # in_delim stays false if not delimited.
             block_size -= len(block)  # Allow for interrupted reads.
             if (block_size <= 0):
               in_delim = True
               block_size = 1
 
-    self.connection.close()
+    self._connection.close()
 
   def set_failure_callback(self, failure_func):
-    """Sets an optional function to call when the socket dies."""
-    self.failure_func = failure_func
+    """Sets an optional function to call when the socket dies.
+    It will receive one arg, an empty dict.
+    """
+    self._failure_func = failure_func
 
 
 class StreamLines():
@@ -121,8 +217,8 @@ class StreamLines():
   def __init__(self):
     self.lock = threading.RLock()
     self.lines = []
-    self.buffers = []
-    self.line_ptn = re.compile("([^\r]*)(?:\r\n)?")
+    self._buffers = []
+    self._line_ptn = re.compile("([^\r]*)(?:\r\n)?")
 
   def size(self):
     with self.lock:
@@ -131,21 +227,30 @@ class StreamLines():
   def clear(self):
     with self.lock:
       del self.lines[:]
-      del self.buffers[:]
+      del self._buffers[:]
 
   def append_block(self, block):
+    """Tokenizes a text block into lines and appends each."""
     with self.lock:
-      for g in re.finditer(self.line_ptn, block):
+      for g in re.finditer(self._line_ptn, block):
         self.append_line(g.group(0))
 
   def append_line(self, line):
+    """Appends a line to the stack.
+    If the line doesn't end with \r\n, it will instead be
+    appended to a holding buffer.
+
+    If it does end with \r\n, the buffer will be prepended
+    to it, the line break stripped, and the result added to
+    the stack.
+    """
     with self.lock:
       if (line.endswith("\r\n")):
-        self.buffers.append(line)
-        self.lines.append(''.join(self.buffers).rstrip(" \r\n"))
-        del self.buffers[:]
+        self._buffers.append(line)
+        self.lines.append(''.join(self._buffers).rstrip(" \r\n"))
+        del self._buffers[:]
       else:
-        self.buffers.append(line)
+        self._buffers.append(line)
 
   def pop_line(self):
     with self.lock:
@@ -156,68 +261,58 @@ class StreamLines():
 
 
 class TweetsThread(KillableThread):
-  """A thread that periodically pops messages off a StreamLines stack.
+  """A thread that periodically pops json messages off a StreamLines stack.
   Subclasses should override show_message() and optionally
   process_event_queue().
   """
 
   def __init__(self, sleep_interval, expiration, stream_lines):
     KillableThread.__init__(self)
-    self.sleep_interval = sleep_interval
-    self.stream_lines = stream_lines
-    self.expire_delta = timedelta(seconds=expiration)
-    self.event_queue = Queue.Queue()
-
-  # Sleep intermittently while checking stuff, if seconds is an integer.
-  def nap(self, seconds):
-    slept = 0.0
-    while (slept < seconds):
-      amt = min(0.5, (seconds-slept))
-      time.sleep(amt)
-      slept += amt
-      if (not self.keep_alive): break
-      self.process_event_queue(0)
+    self._sleep_interval = sleep_interval
+    self._stream_lines = stream_lines
+    self._expire_delta = timedelta(seconds=expiration)
+    self._listeners_lock = threading.RLock()
+    self._listeners = []
 
   def run(self):
     try:
       while (self.keep_alive):
-        self.nap(self.sleep_interval)
+        self.nap(self._sleep_interval)
         if (not self.keep_alive): break
-        self.process_event_queue(0)
 
         while(self.keep_alive):
           # Keep popping until a valid unexpired tweet is found.
-          line = self.stream_lines.pop_line()
+          line = self._stream_lines.pop_line()
           if (line is None): break
           if (len(line) == 0): continue
 
           tweet = None
           try:
             tweet = json.loads(line)
-            tweet["text_clean"] = ""
           except (TypeError, ValueError) as err:
             logging.info("Tweet parsing failed: %s" % repr(line))
             continue
 
-          msg = ""
+          user_clean = None
+          text_clean = None
           tweet_time = 0
+          if ("user" in tweet and "screen_name" in tweet["user"]):
+            user_clean = common.asciify(tweet["user"]["screen_name"])
+
           if ("text" in tweet):
-            tweet["text_clean"] = common.asciify(common.html_unescape(tweet["text"]))
-            tweet["text_clean"] = re.sub("\r", "", tweet["text_clean"])
-            tweet["text_clean"] = re.sub("^ +", "", tweet["text_clean"])
-            tweet["text_clean"] = re.sub("^@[^ ]+ *", "", tweet["text_clean"], 1)
-            tweet["text_clean"] = re.sub(" *https?://[^ ]+", "", tweet["text_clean"])
-            tweet["text_clean"] = tweet["text_clean"].rstrip(" \n")
-            if (re.match("^[? ]{4,}$", tweet["text_clean"])):
+            text_clean = common.asciify(common.html_unescape(tweet["text"]))
+            text_clean = re.sub("\r", "", text_clean)
+            text_clean = re.sub("^ +", "", text_clean)
+            text_clean = re.sub("^@[^ ]+ *", "", text_clean, 1)
+            text_clean = re.sub(" *https?://[^ ]+", "", text_clean)
+            text_clean = text_clean.rstrip(" \n")
+            if (re.match("^[? ]{4,}$", text_clean)):
               continue  # Likely tons of non-ascii chars. Skip.
-            msg = tweet["text_clean"]
+
           if ("created_at" in tweet):
             tweet_time = datetime.strptime(tweet["created_at"] +" UTC", '%a %b %d %H:%M:%S +0000 %Y %Z')
 
-          if ("user" in tweet and "screen_name" in tweet["user"]):
-            msg = "%s: %s" % (common.asciify(tweet["user"]["screen_name"]), msg)
-
-          if (len(tweet["text_clean"]) > 0):
+          if (user_clean and text_clean and tweet_time):
             current_time = datetime.utcnow()
             lag_delta = (current_time - tweet_time)
             lag_str = ""
@@ -228,12 +323,12 @@ class TweetsThread(KillableThread):
             else:                              # Tweet in future, negative lag (-1 day, 86400-Nsecs).
               lag_str = "-%ds" % (tweet_time - current_time).seconds
 
-            if (lag_delta > self.expire_delta):
-              logging.info("Tweet expired (lag %s): %s" % (lag_str, msg))
+            if (lag_delta > self._expire_delta):
+              logging.info("Tweet expired (lag %s): %s: %s" % (lag_str, user_clean, text_clean))
               continue
             else:
-              logging.info("Tweet shown (lag %s): %s" % (lag_str, msg))
-              self.show_message(msg)
+              logging.info("Tweet shown (lag %s): %s: %s" % (lag_str, user_clean, text_clean))
+              self._show_message(user_clean, text_clean, tweet)
               break
             #logging.info("Time(Current): %s  Time(Tweet): %s" % (current_time.strftime("%a %b %d %Y %H:%M:%S"), tweet_time.strftime("%a %b %d %Y %H:%M:%S")))
             #logging.info("---")
@@ -242,11 +337,82 @@ class TweetsThread(KillableThread):
       logging.exception("Unexpected exception in %s." % self.__class__.__name__)  #raise
       self.keep_alive = False
 
-  def show_message(self, text):
-    print text
+  def add_tweet_listener(self, listener):
+    """Adds a tweet listener. (thread-safe)
 
-  def process_event_queue(self, queue_timeout=0.5):
-    pass
+    :param listener: An object with an on_tweet(user_str, msg_str, tweet_json) method.
+    """
+    if (not hasattr(listener, "on_tweet") or not hasattr(listener.on_tweet, "__call__")):
+      logging.error("%s cannot listen to %s because it lacks an on_tweet method." % (listener.__class__.__name__, self.__class__.__name__))
+      return
 
-  def invoke_later(self, action_name, arg_dict):
-    self.event_queue.put((action_name, arg_dict))
+    with self._listeners_lock:
+      if (listener not in self._listeners):
+        self._listeners.append(listener)
+
+  def remove_tweet_listener(self, listener):
+    """Removes a tweet listener. (thread-safe)"""
+    with self._listeners_lock:
+      try:
+        self._listeners.remove(listener)
+      except (ValueError) as err:
+        pass
+
+  def _show_message(self, user_str, msg_str, tweet_json):
+    """Sends a new tweet to all listeners.
+    :param user_str: The cleaned "screen_name" of the user.
+    :param msg_str: The cleaned "text" of the tweet.
+    :param tweet_json: The raw json object.
+    """
+    with self._listeners_lock:
+      for listener in self._listeners:
+        listener.on_tweet(user_str, msg_str, tweet_json)
+
+
+class SocketConnectThread(KillableThread):
+  """Connects to a server and returns a socket.
+  :param description: A descriptive string for logging.
+  :param server_addr: Server's ip address string.
+  :param server_port: Server's port number.
+  :param retries: Maximum connection attempts.
+  :param retry_interval: Delay in seconds between retries.
+  """
+  def __init__(self, description, server_addr, server_port, retries, retry_interval):
+    KillableThread.__init__(self)
+    self._description = description
+    self._server_addr = server_addr
+    self._server_port = server_port
+    self._retries = retries
+    self._retry_interval = retry_interval
+    self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self._success_func = None
+    self._failure_func = None
+
+  def run(self):
+    failed_connects = 0
+    while (self.keep_alive):
+      self.nap(self._retry_interval)
+      if (not self.keep_alive): break
+      try:
+        self._socket.connect((self._server_addr, self._server_port))
+        if (self._success_func is not None):
+          logging.debug("%s (%s) is calling its success func..." % (self.__class__.__name__, self._description))
+          self._success_func({"socket":self._socket})
+        break
+      except (socket.error) as err:
+        failed_connects += 1
+        if (failed_connects >= self._retries):
+          logging.error("%s (%s) gave up repeated attempts to connect to %s:%s." % (self.__class__.__name__, self._description, self._server_addr, self._server_port))
+          self.keep_alive = False
+
+  def set_success_callback(self, success_func):
+    """Sets an optional function to call after giving up connecting.
+    It will receive one arg, a {"socket":socket} dict.
+    """
+    self._success_func = success_func
+
+  def set_failure_callback(self, failure_func):
+    """Sets an optional function to call after giving up connecting.
+    It will receive one arg, an empty dict.
+    """
+    self._failure_func = failure_func

@@ -95,7 +95,7 @@ class CustomCleanupHandler(CleanupHandler):
       if (self.caught): self.kill_gui(g)
       elif (g not in self.guis): self.guis.append(g)
 
-  def kill_thread(self, t): t.keep_alive = False
+  def kill_thread(self, t): t.stop_living()
   def kill_socket(self, s):
     try:
       s.shutdown(socket.SHUT_WR)
