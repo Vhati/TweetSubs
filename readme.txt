@@ -29,7 +29,8 @@ From a terminal, run: python tweetsubs.py
 
 Changes
 
-1.05 - Moved various classes and functions to their own lib modules.
+1.05 - Added "Ignore Users" option.
+       Moved various classes and functions to their own lib modules.
 1.04 - Trivially changed negative millisecond lag notice to "0s" instead of "-0s".
 1.03 - Added a reconnect prompt when the followed Twitter stream disconnects.
        Moved Twitter client classes into a separate lib module.

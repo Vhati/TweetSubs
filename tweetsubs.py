@@ -156,6 +156,34 @@ class VLCListenerControl(VLCControl):
     self.show_message("%s: %s" % (user_str, msg_str))
 
 
+class TweetsInfoListener():
+  """A listener for TweetsThreads that collects info about the stream."""
+  def __init__(self):
+    self._info_lock = threading.RLock()
+    self._user_list = []
+
+  def add_user(self, user_str):
+    """Adds a known user. (thread-safe)"""
+    with self._info_lock:
+      if (user_str not in self._user_list):
+        self._user_list.append(user_str)
+
+  def get_users(self):
+    """Returns a copy of the list of all known users. (thread-safe)"""
+    with self._info_lock:
+      return self._user_list[:]
+
+  def on_tweet(self, user_str, msg_str, tweet_json):
+    """Responds to incoming tweets. (thread-safe)
+    See: killable_threading.TweetsThread.add_tweet_listener().
+
+    :param user_str: The cleaned "screen_name" of the user.
+    :param msg_str: The cleaned "text" of the tweet.
+    :param tweet_json: The raw json object.
+    """
+    self.add_user(user_str)
+
+
 class LogicThread(killable_threading.KillableThread):
   def __init__(self, mygui, cleanup_handler, tweetsubs_data_dir, vlc_path):
     killable_threading.KillableThread.__init__(self)
@@ -163,6 +191,7 @@ class LogicThread(killable_threading.KillableThread):
                     "ACTION_SET_COUNTDOWN",
                     "ACTION_LOOKUP_USER",
                     "ACTION_FOLLOW_USER", "ACTION_FOLLOW_SAMPLE",
+                    "ACTION_COMPOSE",
                     "ACTION_SPAWN_VLC", "ACTION_SEND_TWEET",
                     "ACTION_SET_VLC_SOCKET", "ACTION_PLAY",
                     "ACTION_REFOLLOW"]
@@ -171,6 +200,7 @@ class LogicThread(killable_threading.KillableThread):
     self.PHASES = ["PHASE_INIT",
                    "PHASE_LOAD_CREDS", "PHASE_PIN_AUTH", "PHASE_AUTHORIZED",
                    "PHASE_SET_COUNTDOWN",
+                   "PHASE_FOLLOWED_USER", "PHASE_FOLLOWED_SAMPLE",
                    "PHASE_COMPOSE", "PHASE_COMPOSE_NERFED"]
     for x in self.PHASES: setattr(self, x, x)
 
@@ -192,6 +222,10 @@ class LogicThread(killable_threading.KillableThread):
 
       self.tweets_thread = killable_threading.TweetsThread(global_config.tweet_check_interval, global_config.tweet_expiration, self.stream_lines)
       self.tweets_thread.start()
+      self.cleanup_handler.add_thread(self.tweets_thread)
+
+      self.tweets_info = TweetsInfoListener()
+      self.tweets_thread.add_tweet_listener(self.tweets_info)
 
       def vlc_control_failure_callback(arg_dict):
         self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: Failed to communicate with VLC."})
@@ -228,6 +262,10 @@ class LogicThread(killable_threading.KillableThread):
             self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Re-following declined by user."})
         self.mygui.invoke_later(prompt_func, {})
       self.follow_failure_callback = follow_failure_callback
+
+      self.mygui.invoke_later(self.mygui.ACTION_SETUP_IGNORE_USERS, {"get_all_users_func":self.tweets_info.get_users,
+                                                                     "get_ignored_users_func":self.tweets_thread.get_ignored_users,
+                                                                     "set_ignored_users_func":self.tweets_thread.set_ignored_users})
 
       self.mygui.invoke_later(self.mygui.ACTION_SWITCH_WELCOME, {"next_func":self.welcome_prompt_callback})
 
@@ -273,15 +311,16 @@ class LogicThread(killable_threading.KillableThread):
      | \ACTION_PIN_AUTH(req_token, verifier_string)
      |   |
     ACTION_SET_COUNTDOWN(countdown_to_time)
-     | \-ACTION_LOOKUP_USER(user_name)
-     |   ACTION_FOLLOW_USER(user_name, user_id)
+     | |-ACTION_LOOKUP_USER(user_name)
+     | \-ACTION_FOLLOW_USER(user_name, user_id)
      |                         |
      \-ACTION_FOLLOW_SAMPLE()  |
         |                      |
-    ACTION_SPAWN_VLC()       --/
-    ACTION_SEND_TWEET(text)
+    ACTION_COMPOSE()         --/
+    ACTION_SEND_TWEET(text), if following a user.
     ---
     The following don't have timing restrictions:
+    ACTION_SPAWN_VLC()
     ACTION_SET_VLC_SOCKET(), when a socket to VLC (dis)connected.
     ACTION_REFOLLOW(), when a StreamThread disconnects.
     """
@@ -360,6 +399,7 @@ class LogicThread(killable_threading.KillableThread):
       else:
         # Forget this happened.
         self.mygui.invoke_later(self.mygui.ACTION_WIDGETS_ENABLE, {"phase":self.mygui.PHASE_WELCOME, "b":True})
+        self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: Failed to establish Twitter credentials."})
 
         self.phase = self.PHASE_INIT  # Revert.
 
@@ -443,9 +483,14 @@ class LogicThread(killable_threading.KillableThread):
           self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: User following failed weirdly."})
           return
 
-      self.phase = self.PHASE_COMPOSE
+      self.phase = self.PHASE_FOLLOWED_USER
       self.stream_lines.clear()
+      if (self.stream_thread is not None):
+        if (self.stream_thread.isAlive()):
+          self.stream_thread.stop_living()
+        self.stream_thread = None
       self.followed_user = None
+
       oauth_request = oauth.OAuthRequest.from_consumer_and_token(self.consumer, token=self.token, http_method='POST', http_url=self.client.FOLLOW_USER_URL, parameters={"follow":arg_dict["user_id"],"delimited":"length"})
       oauth_request.sign_request(self.signature_method, self.consumer, self.token)
 
@@ -457,15 +502,7 @@ class LogicThread(killable_threading.KillableThread):
         self.stream_thread.start()
         self.followed_user = {"user_type":"user", "user_name":arg_dict["user_name"], "user_id":arg_dict["user_id"]}
 
-        def next_func(arg_dict):
-          self.invoke_later(self.ACTION_SEND_TWEET, arg_dict)
-
-        def text_clean_func(text):
-          return self.client.get_sanitized_tweet(text)
-
-        self.mygui.invoke_later(self.mygui.ACTION_SWITCH_COMPOSE, {"next_func":next_func,"text_clean_func":text_clean_func,"max_length":self.client.MAX_TWEET_LENGTH,"src_user_name":self.src_user["user_name"],"countdown_to_time":self.countdown_to_time})
-        self.mygui.invoke_later(self.mygui.ACTION_COMPOSE_TEXT, {"text":("@%s " % self.followed_user["user_name"])})
-
+        self.invoke_later(self.ACTION_COMPOSE, {})
         self.invoke_later(self.ACTION_SPAWN_VLC, {})
       except (pytwit.TwitterException) as err:
         logging.error("%s" % str(err))
@@ -474,14 +511,25 @@ class LogicThread(killable_threading.KillableThread):
         self.mygui.invoke_later(self.mygui.ACTION_SWITCH_FOLLOW, {"next_func":next_func})
         self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":("Error: User follow failed: %s" % arg_dict["user"])})
 
-        self.phase  = self.PHASE_LOAD_CREDS  # Revert.
+        self.phase  = self.PHASE_SET_COUNTDOWN  # Revert.
+
+        if (self.stream_thread is not None):
+          if (self.stream_thread.isAlive()):
+            self.stream_thread.stop_living()
+          self.stream_thread = None
+        self.followed_user = None
 
     elif (action_name == self.ACTION_FOLLOW_SAMPLE):
       if (self.phase not in [self.PHASE_SET_COUNTDOWN]): return
 
-      self.phase = self.PHASE_COMPOSE_NERFED
+      self.phase = self.PHASE_FOLLOWED_SAMPLE
       self.stream_lines.clear()
+      if (self.stream_thread is not None):
+        if (self.stream_thread.isAlive()):
+          self.stream_thread.stop_living()
+        self.stream_thread = None
       self.followed_user = None
+
       oauth_request = oauth.OAuthRequest.from_consumer_and_token(self.consumer, token=self.token, http_method='POST', http_url=self.client.FOLLOW_SAMPLE_URL, parameters={"delimited":"length"})
       oauth_request.sign_request(self.signature_method, self.consumer, self.token)
 
@@ -493,8 +541,7 @@ class LogicThread(killable_threading.KillableThread):
         self.stream_thread.start()
         self.followed_user = {"user_type":"sample"}
 
-        self.mygui.invoke_later(self.mygui.ACTION_SWITCH_COMPOSE_NERFED, {"src_user_name":self.src_user["user_name"],"countdown_to_time":self.countdown_to_time})
-
+        self.invoke_later(self.ACTION_COMPOSE, {})
         self.invoke_later(self.ACTION_SPAWN_VLC, {})
       except (pytwit.TwitterException) as err:
         logging.error("%s" % str(err))
@@ -503,8 +550,35 @@ class LogicThread(killable_threading.KillableThread):
         self.mygui.invoke_later(self.mygui.ACTION_SWITCH_FOLLOW, {"next_func":next_func})
         self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: Sample follow failed."})
 
-        self.phase  = self.PHASE_LOAD_CREDS  # Revert.
+        self.phase  = self.PHASE_SET_COUNTDOWN  # Revert.
 
+        if (self.stream_thread is not None):
+          if (self.stream_thread.isAlive()):
+            self.stream_thread.stop_living()
+          self.stream_thread = None
+        self.followed_user = None
+
+    elif (action_name == self.ACTION_COMPOSE):
+      if (not self.src_user or "user_name" not in self.src_user or not self.src_user["user_name"]):
+        logging.error("Bad/missing src_user[\"user_name\"] when %s invoked %s." % (self.__class__.__name__, action_name))
+        return
+
+      if (self.followed_user is not None and self.followed_user["user_type"] == "user"):
+        # Followed a user, regular compose gui.
+        self.phase = self.PHASE_COMPOSE
+        def next_func(arg_dict):
+          self.invoke_later(self.ACTION_SEND_TWEET, arg_dict)
+
+        def text_clean_func(text):
+          return self.client.get_sanitized_tweet(text)
+
+        self.mygui.invoke_later(self.mygui.ACTION_SWITCH_COMPOSE, {"next_func":next_func,"text_clean_func":text_clean_func,"max_length":self.client.MAX_TWEET_LENGTH,"src_user_name":self.src_user["user_name"],"countdown_to_time":self.countdown_to_time})
+        self.mygui.invoke_later(self.mygui.ACTION_COMPOSE_TEXT, {"text":("@%s " % self.followed_user["user_name"])})
+
+      else:
+        # Followed sample, nerfed compose gui.
+        self.phase = self.PHASE_COMPOSE_NERFED
+        self.mygui.invoke_later(self.mygui.ACTION_SWITCH_COMPOSE_NERFED, {"src_user_name":self.src_user["user_name"],"countdown_to_time":self.countdown_to_time})
 
     elif (action_name == self.ACTION_REFOLLOW):
       if (self.token is None):
@@ -512,11 +586,15 @@ class LogicThread(killable_threading.KillableThread):
         self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: Re-following failed. No auth token."})
         return
       if (self.followed_user is None or self.followed_user["user_type"] not in ["user","sample"]):
-        logging.error("Re-following failed. Nothing was followed to begin with.")
-        self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: Re-following failed. Nothing was followed to begin with."})
+        logging.error("Re-following failed. No user/sample was followed to begin with.")
+        self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: Re-following failed. No user/sample was followed to begin with."})
         return
 
       self.stream_lines.clear()
+      if (self.stream_thread is not None):
+        if (self.stream_thread.isAlive()):
+          self.stream_thread.stop_living()
+        self.stream_thread = None
 
       logging.info("Reconnecting to previously followed Twitter stream.")
       try:
@@ -538,9 +616,12 @@ class LogicThread(killable_threading.KillableThread):
         self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Re-following succeeded."})
       except (pytwit.TwitterException) as err:
         logging.error("%s" % str(err))
-
         self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: Re-following failed."})
 
+        if (self.stream_thread is not None):
+          if (self.stream_thread.isAlive()):
+            self.stream_thread.stop_living()
+          self.stream_thread = None
 
     elif (action_name == self.ACTION_SPAWN_VLC):
       logging.info("Spawning VLC.")
@@ -560,7 +641,6 @@ class LogicThread(killable_threading.KillableThread):
       self.cleanup_handler.add_thread(connect_thread)
       self.cleanup_handler.add_socket(connect_thread._socket)
 
-
     elif (action_name == self.ACTION_SET_VLC_SOCKET):
       for arg, is_bad in [("socket", (lambda x:False))]:
         if (arg not in arg_dict or is_bad(arg)):
@@ -568,11 +648,13 @@ class LogicThread(killable_threading.KillableThread):
           return
 
       self.vlc_control.set_socket(arg_dict["socket"])
-      if (arg_dict["socket"] is not None):
-        self.tweets_thread.add_tweet_listener(self.vlc_control)
+      if (not self.tweets_thread):
+        logging.error("Bad/missing tweets_thread when %s invoked %s." % (self.__class__.__name__, action_name))
       else:
-        self.tweets_thread.remove_tweet_listener(self.vlc_control)
-
+        if (arg_dict["socket"] is not None):
+          self.tweets_thread.add_tweet_listener(self.vlc_control)
+        else:
+          self.tweets_thread.remove_tweet_listener(self.vlc_control)
 
     elif (action_name == self.ACTION_SEND_TWEET):
       if (self.phase not in [self.PHASE_COMPOSE]): return
@@ -733,19 +815,21 @@ def main():
     osutils.ensure_dir_exists(tweetsubs_data_dir, 0700)
 
     root = tk.Tk()
-    mygui = tsgui.GuiApp(master=root)
-    root.update()  # No mainloop to auto-update yet.
-    mygui.center_window()
-    cleanup_handler.add_gui(mygui)
-
-    logic_thread = LogicThread(mygui, cleanup_handler, tweetsubs_data_dir, vlc_path)
-    logic_thread.start()
+    root.withdraw()
 
     # Tkinter mainloop doesn't normally die and let its exceptions be caught.
     def tk_error_func(exc, val, tb):
       logging.exception("%s" % exc)
       root.destroy()
     root.report_callback_exception = tk_error_func
+
+    mygui = tsgui.GuiApp(master=root)
+    mygui.update()  # No mainloop to auto-update yet.
+    mygui.center_window()
+    cleanup_handler.add_gui(mygui)
+
+    logic_thread = LogicThread(mygui, cleanup_handler, tweetsubs_data_dir, vlc_path)
+    logic_thread.start()
 
     root.mainloop()
 

@@ -220,6 +220,8 @@ class TweetsThread(KillableThread):
     self._expire_delta = timedelta(seconds=expiration)
     self._listeners_lock = threading.RLock()
     self._listeners = []
+    self._options_lock = threading.RLock()
+    self._ignored_users = []
 
   def run(self):
     try:
@@ -243,8 +245,12 @@ class TweetsThread(KillableThread):
           user_clean = None
           text_clean = None
           tweet_time = 0
+          user_is_ignored = False
           if ("user" in tweet and "screen_name" in tweet["user"]):
             user_clean = common.asciify(tweet["user"]["screen_name"])
+            with self._options_lock:
+              if (user_clean in self._ignored_users):
+                user_is_ignored = True
 
           if ("text" in tweet):
             text_clean = common.asciify(common.html_unescape(tweet["text"]))
@@ -253,7 +259,7 @@ class TweetsThread(KillableThread):
             text_clean = re.sub("^@[^ ]+ *", "", text_clean, 1)
             text_clean = re.sub(" *https?://[^ ]+", "", text_clean)
             text_clean = text_clean.rstrip(" \n")
-            if (re.match("^[? ]{4,}$", text_clean)):
+            if (re.match("^[? .\n\"]{8,}$", text_clean)):
               continue  # Likely tons of non-ascii chars. Skip.
 
           if ("created_at" in tweet):
@@ -272,6 +278,9 @@ class TweetsThread(KillableThread):
 
             if (lag_delta > self._expire_delta):
               logging.info("Tweet expired (lag %s): %s: %s" % (lag_str, user_clean, text_clean))
+              continue
+            elif (user_is_ignored):
+              logging.info("Tweet ignored (lag %s): %s: %s" % (lag_str, user_clean, text_clean))
               continue
             else:
               logging.info("Tweet shown (lag %s): %s: %s" % (lag_str, user_clean, text_clean))
@@ -314,6 +323,17 @@ class TweetsThread(KillableThread):
     with self._listeners_lock:
       for listener in self._listeners:
         listener.on_tweet(user_str, msg_str, tweet_json)
+
+  def set_ignored_users(self, user_list):
+    """Sets ignored users' names by copying the contents of a new list. (thread-safe)"""
+    if (user_list is None): user_list = []
+    with self._options_lock:
+      self._ignored_users[:] = user_list[:]
+
+  def get_ignored_users(self):
+    """Returns a copy of the list of ignored users' names. (thread-safe)"""
+    with self._options_lock:
+      return self._ignored_users[:]
 
 
 class SocketConnectThread(KillableThread):

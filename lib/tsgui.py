@@ -11,44 +11,62 @@ from lib import global_config
 from lib import tkwidgets
 
 
-class GuiApp(tk.Frame):
+class GuiApp(tk.Toplevel):
   """A tkinter GUI interface for TweetSubs.
-  A separate thread handles logic and controls this widget via invoke_later().
+  A separate thread handles logic and controls this window via invoke_later().
   That thread provides callbacks, to later notify itself how the user responded.
   """
 
   def __init__(self, master=None):
-    tk.Frame.__init__(self, master)
+    tk.Toplevel.__init__(self, master)
     # Pseudo enum constants.
     self.ACTIONS = ["ACTION_SWITCH_WELCOME", "ACTION_SWITCH_PIN",
                     "ACTION_SWITCH_COUNTDOWN", "ACTION_SWITCH_FOLLOW",
                     "ACTION_SWITCH_COMPOSE", "ACTION_SWITCH_COMPOSE_NERFED",
                     "ACTION_COMPOSE_TEXT", "ACTION_WIDGETS_ENABLE",
-                    "ACTION_WARN", "ACTION_DIE"]
+                    "ACTION_WARN", "ACTION_SETUP_IGNORE_USERS",
+                    "ACTION_DIE"]
     for x in self.ACTIONS: setattr(self, x, x)
     self.PHASES = ["PHASE_SPLASH", "PHASE_WELCOME", "PHASE_PIN",
                    "PHASE_COUNTDOWN", "PHASE_FOLLOW", "PHASE_COMPOSE"]
     for x in self.PHASES: setattr(self, x, x)
 
+    self.MENU_IGNORE_USERS = "Ignore Users..."
+
     self.VERSION = global_config.VERSION
 
-    self.event_queue = Queue.Queue()
+    self._event_queue = Queue.Queue()
     self.tmp_frame = None
     self.state = {}
-    self.root = self.winfo_toplevel()
     self.done = False  # Indicates to other threads that mainloop() ended.
 
-    #label = tk.Label(self.root, text="")
+    self._menubar = tk.Menu(self)
+    self._options_menu = tk.Menu(self._menubar, tearoff="no")
+    self._options_menu.add_command(label=self.MENU_IGNORE_USERS, state="disabled")
+    self._menubar.add_cascade(label="Options",menu=self._options_menu,underline="0")
+    self.config(menu=self._menubar)
+
+    self._menu_funcs = {}   # Settable callbacks for menuitem clicks.
+    self._menu_lookup = {}  # Lookup parent menus by menuitem labels.
+    self._menu_lookup[self.MENU_IGNORE_USERS] = self._options_menu
+
+    self._menubar_sep = tk.Frame(self, borderwidth="1",relief="groove",height=2)
+    self._menubar_sep.pack(fill="x",expand="yes")
+
+    self._pane = tk.Frame(self)
+    self._pane.pack(fill="both",expand="yes")
+
+    #label = tk.Label(self, text="")
     #self.default_font = tkFont.Font(font=label['font'])
     #label.destroy()
     #self.default_font.configure(size="10")
     ##self.default_font = tkFont.Font(family="Times", size="10")
     #print self.default_font.actual()
 
-    self.clpbrd_menu = tk.Menu(self, tearoff=0)
-    self.clpbrd_menu.add_command(label="Cut")
-    self.clpbrd_menu.add_command(label="Copy")
-    self.clpbrd_menu.add_command(label="Paste")
+    self._clpbrd_menu = tk.Menu(self, tearoff=0)
+    self._clpbrd_menu.add_command(label="Cut")
+    self._clpbrd_menu.add_command(label="Copy")
+    self._clpbrd_menu.add_command(label="Paste")
     def show_clpbrd_menu(e):
       w = e.widget
       edit_choice_state = "normal"
@@ -56,24 +74,24 @@ class GuiApp(tk.Frame):
         if (w.cget("state") == "disabled"): edit_choice_state = "disabled"
       except (Exception) as err:
         pass
-      self.clpbrd_menu.entryconfigure("Cut", command=lambda: w.event_generate("<<Cut>>"), state=edit_choice_state)
-      self.clpbrd_menu.entryconfigure("Copy", command=lambda: w.event_generate("<<Copy>>"))
-      self.clpbrd_menu.entryconfigure("Paste", command=lambda: w.event_generate("<<Paste>>"), state=edit_choice_state)
-      self.clpbrd_menu.tk.call("tk_popup", self.clpbrd_menu, e.x_root, e.y_root)
+      self._clpbrd_menu.entryconfigure("Cut", command=lambda: w.event_generate("<<Cut>>"), state=edit_choice_state)
+      self._clpbrd_menu.entryconfigure("Copy", command=lambda: w.event_generate("<<Copy>>"))
+      self._clpbrd_menu.entryconfigure("Paste", command=lambda: w.event_generate("<<Paste>>"), state=edit_choice_state)
+      self._clpbrd_menu.tk.call("tk_popup", self._clpbrd_menu, e.x_root, e.y_root)
     self.bind_class("Entry", "<Button-3><ButtonRelease-3>", show_clpbrd_menu)
     self.bind_class("Text", "<Button-3><ButtonRelease-3>", show_clpbrd_menu)
     self.bind("<<EventEnqueued>>", self.process_event_queue)
+    self.wm_protocol("WM_DELETE_WINDOW", self._root().destroy)
 
-    self.pack()                        # Place self in parent.
-    self.root.resizable(False, False)  # Stops user resizing.
+    self.resizable(False, False)  # Stops user resizing.
     self.switch_to_splash()
 
   def switch_to_splash(self):
     self.remove_all()
 
-    self.root.wm_title("TweetSubs %s" % self.VERSION)
+    self.wm_title("TweetSubs %s" % self.VERSION)
     self.state["phase"] = self.PHASE_SPLASH
-    self.tmp_frame = tk.Frame(self)
+    self.tmp_frame = tk.Frame(self._pane)
     self.tmp_frame.pack()
 
     warning_frame = tk.Frame(self.tmp_frame, borderwidth="1",relief="sunken")
@@ -86,9 +104,9 @@ class GuiApp(tk.Frame):
   def switch_to_welcome(self, next_func):
     self.remove_all()
 
-    self.root.wm_title("TweetSubs %s" % self.VERSION)
+    self.wm_title("TweetSubs %s" % self.VERSION)
     self.state["phase"] = self.PHASE_WELCOME
-    self.tmp_frame = tk.Frame(self)
+    self.tmp_frame = tk.Frame(self._pane)
     self.tmp_frame.pack()
 
     notice_str = ""
@@ -124,9 +142,9 @@ class GuiApp(tk.Frame):
   def switch_to_pin_prompt(self, next_func, req_token, auth_url):
     self.remove_all()
 
-    self.root.wm_title("TweetSubs - PIN")
+    self.wm_title("TweetSubs - PIN")
     self.state["phase"] = self.PHASE_PIN
-    self.tmp_frame = tk.Frame(self)
+    self.tmp_frame = tk.Frame(self._pane)
     self.tmp_frame.pack()
 
     notice_str = ""
@@ -179,9 +197,9 @@ class GuiApp(tk.Frame):
   def switch_to_countdown_prompt(self, next_func):
     self.remove_all()
 
-    self.root.wm_title("TweetSubs - Countdown")
+    self.wm_title("TweetSubs - Countdown")
     self.state["phase"] = self.PHASE_COUNTDOWN
-    self.tmp_frame = tk.Frame(self)
+    self.tmp_frame = tk.Frame(self._pane)
     self.tmp_frame.pack()
 
     notice_str = ""
@@ -244,9 +262,9 @@ class GuiApp(tk.Frame):
   def switch_to_follow_prompt(self, next_func):
     self.remove_all()
 
-    self.root.wm_title("TweetSubs - Follow")
+    self.wm_title("TweetSubs - Follow")
     self.state["phase"] = self.PHASE_FOLLOW
-    self.tmp_frame = tk.Frame(self)
+    self.tmp_frame = tk.Frame(self._pane)
     self.tmp_frame.pack()
 
     notice_str = ""
@@ -289,9 +307,9 @@ class GuiApp(tk.Frame):
   def switch_to_compose(self, next_func, text_clean_func, max_length, src_user_name, countdown_to_time):
     self.remove_all()
 
-    self.root.wm_title("TweetSubs - Compose (as %s)" % src_user_name)
+    self.wm_title("TweetSubs - Compose (as %s)" % src_user_name)
     self.state["phase"] = self.PHASE_COMPOSE
-    self.tmp_frame = tk.Frame(self)
+    self.tmp_frame = tk.Frame(self._pane)
     self.tmp_frame.pack()
 
     # Moved whoami reminder from notice_str to window title.
@@ -329,7 +347,7 @@ class GuiApp(tk.Frame):
     self.state["send_btn"] = send_btn
 
     warning_frame = tk.Frame(self.tmp_frame, borderwidth="1",relief="sunken")
-    warning_frame.pack(fill="x",expand="yes",pady=("10","0"))
+    warning_frame.pack(fill="x",expand="yes",pady=("0","0"))
 
     warning_lbl = tk.Label(warning_frame, text="")
     warning_lbl.pack(side="left",fill="x",expand="yes")
@@ -340,7 +358,7 @@ class GuiApp(tk.Frame):
     #clock_sep = tk.Label(warning_frame, text="|")
     #clock_sep.pack(side="left",fill="y",expand="no")
 
-    clock_lbl = tkwidgets.CountdownClock(warning_frame, text="+0:00:00", target_time=countdown_to_time)
+    clock_lbl = tkwidgets.CountdownClock(warning_frame, target_time=countdown_to_time)
     clock_lbl.pack(side="left",fill="none",expand="no")
     self.state["clock_lbl"] = clock_lbl
 
@@ -378,6 +396,7 @@ class GuiApp(tk.Frame):
     message_area.focus_set()
 
   def set_widgets_enabled(self, phase, b):
+    """Toggles important widgets' enabled state, depending on the current phase."""
     if ("phase" not in self.state or self.state["phase"] != phase): return
     if (self.state["phase"] == self.PHASE_WELCOME):
       if (b is True):
@@ -401,31 +420,54 @@ class GuiApp(tk.Frame):
         self.state["send_btn"].config(state="disabled")
 
   def remove_all(self):
+    """Removes self.tmp_frame from the window and resets it to None.
+    The self.state dict is also cleared.
+    """
     if (self.tmp_frame):
       self.tmp_frame.pack_forget()  # or grid_forget()
       self.tmp_frame.destroy()
       self.tmp_frame = None
     self.state.clear()
 
+  def set_menu_callback(self, menu_label, func):
+    """Associates a menuitem with a callback function, and toggles its disabled state.
+
+    :param menu_label: One of the MENU_* constants.
+    :param func: A no-arg function, or None.
+    """
+    if (menu_label not in self._menu_lookup or self._menu_lookup[menu_label] is None):
+      logging.error("Attempted to set a callback on non-existent menuitem: %s." % menu_label)
+      return
+
+    parent_menu = self._menu_lookup[menu_label]
+    self._menu_funcs[menu_label] = func
+    if (func is not None):
+      parent_menu.entryconfigure(menu_label, state="normal", command=self._menu_funcs[menu_label])
+    else:
+      parent_menu.entryconfigure(menu_label, state="disabled")
+
   def center_window(self):
+    """Centers this window on the screen.
+    Mostly. Window manager decoration and the menubar aren't factored in.
+    """
     # An event-driven call to this would go nuts with plain update().
-    self.root.update_idletasks()
-    xp = (self.root.winfo_screenwidth()/2) - (self.root.winfo_width()/2)
-    yp = (self.root.winfo_screenheight()/2) - (self.root.winfo_height()/2)
-    self.root.geometry('+{0}+{1}'.format(xp, yp))
+    self.update_idletasks()  # Make window width/height methods work.
+    xp = (self.winfo_screenwidth()//2) - (self.winfo_width()//2)
+    yp = (self.winfo_screenheight()//2) - (self.winfo_height()//2)
+    self.geometry("+%d+%d" % (xp, yp))
 
     # Geometry WxH+X+Y resizes, but any manual sizing disables auto-fit.
-    #self.root.geometry('{0}x{1}+{2}+{3}'.format(self.root.winfo_width(), self.root.winfo_height(), xp, yp))
+    #self.geometry("%dx%d+%d+%d" % (self.winfo_width(), self.winfo_height(), xp, yp))
     # To Auto-fit again, clear the geometry.
-    #self.root.winfo_toplevel().wm_geometry("")
+    #self.winfo_toplevel().wm_geometry("")
 
     # Misc notes...
     #self.pack_propagate(False)  # Tells a widget to ignore its contents' requests to resize.
 
-  # Toggles always on top (Windows only).
   def set_topmost(self, b):
-    if (b is True): self.root.attributes('-topmost', 1)
-    else: self.root.attributes('-topmost', 0)
+    """Toggles 'always on top' for this window. (Windows only)"""
+    if (b is True): self.attributes('-topmost', 1)
+    else: self.attributes('-topmost', 0)
 
   def process_event_queue(self, event):
     """Processes events queued via invoke_later().
@@ -438,8 +480,10 @@ class GuiApp(tk.Frame):
     ACTION_SWITCH_COMPOSE_NERFED(src_user_name, countdown_to_time)
     ACTION_COMPOSE_TEXT(text)
     ACTION_WARN(message)
+    ACTION_SETUP_IGNORE_USERS(get_all_users_func, get_ignored_users_func, set_ignored_users_func)
+    ACTION_DIE
     """
-    func_or_name, arg_dict = self.event_queue.get()
+    func_or_name, arg_dict = self._event_queue.get()
     def check_args(args):
       for arg in args:
         if (arg not in arg_dict):
@@ -486,13 +530,43 @@ class GuiApp(tk.Frame):
     elif (func_or_name == self.ACTION_WARN):
       if (check_args(["message"]) and "warning_lbl" in self.state):
         self.state["warning_lbl"].config(text=arg_dict["message"])
+    elif (func_or_name == self.ACTION_SETUP_IGNORE_USERS):
+      if (check_args(["get_all_users_func","get_ignored_users_func","set_ignored_users_func"])):
+        get_all_users_func = arg_dict["get_all_users_func"]
+        get_ignored_users_func = arg_dict["get_ignored_users_func"]
+        set_ignored_users_func = arg_dict["set_ignored_users_func"]
+
+        if (get_all_users_func and get_ignored_users_func and set_ignored_users_func):
+          def show_ignore_dialog():
+            all_users = get_all_users_func()
+            ignored_users = get_ignored_users_func()
+
+            if (len(all_users) + len(ignored_users) == 0):
+              tkMessageBox.showinfo("Ignore Users", "No users to choose from.\nTry again later.")
+              return
+
+            current_ticks = {}
+            for u in all_users:
+              current_ticks[u] = 0
+            for u in ignored_users:
+              if (u not in current_ticks or current_ticks[u] == 0):
+                current_ticks[u] = 1
+
+            def ok_callback(new_ticks):
+              new_ignored_users = [k for (k,v) in new_ticks.items() if (v == 1)]
+              set_ignored_users_func(new_ignored_users)
+
+            tkwidgets.CheckboxListDialog(self, title="Ignore Users", namelist=current_ticks, metacols=3, max_height=150, ok_func=ok_callback)
+          self.set_menu_callback(self.MENU_IGNORE_USERS, show_ignore_dialog)
+        else:
+          self.set_menu_callback(self.MENU_IGNORE_USERS, None)
     elif (func_or_name == self.ACTION_DIE):
-      self.root.destroy()
+      self._root().destroy()
 
   # Non-GUI threads can call this.
   def invoke_later(self, func_or_name, arg_dict):
     try:
-      self.event_queue.put((func_or_name, arg_dict))
+      self._event_queue.put((func_or_name, arg_dict))
       self.event_generate("<<EventEnqueued>>", when="tail")
       return True
     except (tk.TclError) as err:
