@@ -80,11 +80,18 @@ class GuiApp(tk.Toplevel):
       self._clpbrd_menu.tk.call("tk_popup", self._clpbrd_menu, e.x_root, e.y_root)
     self.bind_class("Entry", "<Button-3><ButtonRelease-3>", show_clpbrd_menu)
     self.bind_class("Text", "<Button-3><ButtonRelease-3>", show_clpbrd_menu)
-    self.bind("<<EventEnqueued>>", self.process_event_queue)
-    self.wm_protocol("WM_DELETE_WINDOW", self._root().destroy)
+    #self.bind("<<EventEnqueued>>", self.process_event_queue)
+    self.wm_protocol("WM_DELETE_WINDOW", self._on_delete)
+
+    def poll_queue():
+      self.process_event_queue(None)
+      self._poll_queue_alarm_id = self.after(100, self._poll_queue)
+    self._poll_queue_alarm_id = None
+    self._poll_queue = poll_queue
 
     self.resizable(False, False)  # Stops user resizing.
     self.switch_to_splash()
+    self._poll_queue()
 
   def switch_to_splash(self):
     self.remove_all()
@@ -469,6 +476,11 @@ class GuiApp(tk.Toplevel):
     if (b is True): self.attributes('-topmost', 1)
     else: self.attributes('-topmost', 0)
 
+  def _on_delete(self):
+    if (self._poll_queue_alarm_id is not None):
+      self.after_cancel(self._poll_queue_alarm_id)
+      self._root().quit()
+
   def process_event_queue(self, event):
     """Processes events queued via invoke_later().
 
@@ -483,7 +495,13 @@ class GuiApp(tk.Toplevel):
     ACTION_SETUP_IGNORE_USERS(get_all_users_func, get_ignored_users_func, set_ignored_users_func)
     ACTION_DIE
     """
-    func_or_name, arg_dict = self._event_queue.get()
+    # With after() polling, use get_nowait() to avoid blocking.
+    func_or_name, arg_dict = None, None
+    try:
+      func_or_name, arg_dict = self._event_queue.get_nowait()
+    except (Queue.Empty) as err:
+      return
+
     def check_args(args):
       for arg in args:
         if (arg not in arg_dict):
@@ -563,11 +581,16 @@ class GuiApp(tk.Toplevel):
     elif (func_or_name == self.ACTION_DIE):
       self._root().destroy()
 
-  # Non-GUI threads can call this.
   def invoke_later(self, func_or_name, arg_dict):
-    try:
-      self._event_queue.put((func_or_name, arg_dict))
-      self.event_generate("<<EventEnqueued>>", when="tail")
-      return True
-    except (tk.TclError) as err:
-      return False
+    """Schedules an action to occur in this thread (thread-safe)."""
+    self._event_queue.put((func_or_name, arg_dict))
+    # The queue will be polled eventually by an after() alarm.
+
+    #try:
+    #  self._event_queue.put((func_or_name, arg_dict))
+    #  self.event_generate("<<EventEnqueued>>", when="tail")
+    #  # Grr, event_generate from a non-GUI thread can raise RuntimeError.
+    #  return True
+    #except (tk.TclError) as err:
+    #  # mainthread() is no longer running.
+    #  return False
