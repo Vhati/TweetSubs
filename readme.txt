@@ -27,6 +27,15 @@ From a terminal, run: python tweetsubs.py
 
 
 
+Troubleshooting
+
+If you're running Linux from a livecd or usb drive, and you
+get a 401 Unauthorized error while fetching an auth request
+token from Twitter... You may need to set your local
+timezone in the OS's preferences.
+
+
+
 Changes
 
 1.05 - Added "Ignore Users" option.
