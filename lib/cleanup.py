@@ -66,10 +66,20 @@ class CleanupHandler():
 
 class CustomCleanupHandler(CleanupHandler):
   """A CleanupHandler that understands KillableThreads, sockets,
-  subprocess objects, and GuiApps."""
+  subprocess objects, and GuiApps.
 
-  def __init__(self, killable_threads=[], sockets=[], procs=[], guis=[]):
+  :param killable_threads: A list of KillableThread objects.
+  :param sockets: A list of socket objects.
+  :param procs: A list of subprocess objects.
+  :param guis: A list of GuiApp objects.
+  """
+
+  def __init__(self, killable_threads=None, sockets=None, procs=None, guis=None):
     CleanupHandler.__init__(self)
+    if (not killable_threads): killable_threads = []
+    if (not sockets): sockets = []
+    if (not procs): procs = []
+    if (not guis): guis = []
     self.threads = killable_threads
     self.sockets = sockets
     self.procs = procs
