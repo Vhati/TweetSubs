@@ -377,7 +377,7 @@ class GuiApp(tk.Toplevel):
     warning_frame = tk.Frame(self.tmp_frame, borderwidth="1",relief="sunken")
     warning_frame.pack(fill="x",expand="yes",pady=("0","0"))
 
-    warning_lbl = tk.Label(warning_frame, text="From the Options menu, pick \"Launch VLC\" or \"Floating Commentary\".")
+    warning_lbl = tk.Label(warning_frame, text="From the Options menu: pick VLC or Floating.")
     warning_lbl.pack(side="left",fill="x",expand="yes")
     self.state["warning_lbl"] = warning_lbl
 
