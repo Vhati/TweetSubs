@@ -140,10 +140,11 @@ class VLCControl():
     self._failure_func = failure_func
 
 
-class VLCListenerControl(VLCControl):
-  """A VLCControl subclass with TweetSubs-specific listener methods."""
-  def __init__(self):
-    VLCControl.__init__(self)
+class TweetsVLCListener(killable_threading.TweetsListener):
+  """A listener for TweetsThreads that forwards to a VLCControl."""
+  def __init__(self, vlc_control):
+    killable_threading.TweetsListener.__init__(self)
+    self.vlc_control = vlc_control
 
   def on_tweet(self, user_str, msg_str, tweet_json):
     """Responds to incoming tweets. (thread-safe)
@@ -153,12 +154,13 @@ class VLCListenerControl(VLCControl):
     :param msg_str: The cleaned "text" of the tweet.
     :param tweet_json: The raw json object.
     """
-    self.show_message("%s: %s" % (user_str, msg_str))
+    self.vlc_control.show_message("%s: %s" % (user_str, msg_str))
 
 
-class TweetsInfoListener():
+class TweetsInfoListener(killable_threading.TweetsListener):
   """A listener for TweetsThreads that collects info about the stream."""
   def __init__(self):
+    killable_threading.TweetsListener.__init__(self)
     self._info_lock = threading.RLock()
     self._user_list = []
 
@@ -182,6 +184,23 @@ class TweetsInfoListener():
     :param tweet_json: The raw json object.
     """
     self.add_user(user_str)
+
+
+class TweetsGuiListener(killable_threading.TweetsListener):
+  """A listener for TweetsThreads that forwards to a GuiApp."""
+  def __init__(self, myapp):
+    killable_threading.TweetsListener.__init__(self)
+    self.myapp = myapp
+
+  def on_tweet(self, user_str, msg_str, tweet_json):
+    """Responds to incoming tweets. (thread-safe)
+    See: killable_threading.TweetsThread.add_tweet_listener().
+
+    :param user_str: The cleaned "screen_name" of the user.
+    :param msg_str: The cleaned "text" of the tweet.
+    :param tweet_json: The raw json object.
+    """
+    self.myapp.invoke_later(self.myapp.ACTION_NEW_TWEET, {"user_str":user_str, "msg_str":msg_str, "tweet_json":tweet_json})
 
 
 class LogicThread(killable_threading.KillableThread):
@@ -224,14 +243,20 @@ class LogicThread(killable_threading.KillableThread):
       self.tweets_thread.start()
       self.cleanup_handler.add_thread(self.tweets_thread)
 
-      self.tweets_info = TweetsInfoListener()
-      self.tweets_thread.add_tweet_listener(self.tweets_info)
-
       def vlc_control_failure_callback(arg_dict):
         self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: Failed to communicate with VLC."})
         self.invoke_later(self.ACTION_SET_VLC_SOCKET, {"socket":None})
-      self.vlc_control = VLCListenerControl()
+      self.vlc_control = VLCControl()
       self.vlc_control.set_failure_callback(vlc_control_failure_callback)
+
+      self.tweets_vlc_listener = TweetsVLCListener(self.vlc_control)
+      # This will be added/removed by ACTION_SET_VLC_SOCKET.
+
+      self.tweets_gui_listener = TweetsGuiListener(self.mygui)
+      self.tweets_thread.add_tweet_listener(self.tweets_gui_listener)
+
+      self.tweets_info_listener = TweetsInfoListener()
+      self.tweets_thread.add_tweet_listener(self.tweets_info_listener)
 
       self.client = pytwit.TwitterOAuthClient()
       self.consumer = oauth.OAuthConsumer(global_config.CONSUMER_KEY, global_config.CONSUMER_SECRET)
@@ -263,9 +288,13 @@ class LogicThread(killable_threading.KillableThread):
         self.mygui.invoke_later(prompt_func, {})
       self.follow_failure_callback = follow_failure_callback
 
-      self.mygui.invoke_later(self.mygui.ACTION_SETUP_IGNORE_USERS, {"get_all_users_func":self.tweets_info.get_users,
+      self.mygui.invoke_later(self.mygui.ACTION_SETUP_IGNORE_USERS, {"get_all_users_func":self.tweets_info_listener.get_users,
                                                                      "get_ignored_users_func":self.tweets_thread.get_ignored_users,
                                                                      "set_ignored_users_func":self.tweets_thread.set_ignored_users})
+      def vlc_spawn_callback():
+        self.invoke_later(self.ACTION_SPAWN_VLC, {})
+      self.vlc_spawn_callback = vlc_spawn_callback
+      self.mygui.invoke_later(self.mygui.ACTION_SETUP_SPAWN_VLC, {"spawn_func":self.vlc_spawn_callback})
 
       self.mygui.invoke_later(self.mygui.ACTION_SWITCH_WELCOME, {"next_func":self.welcome_prompt_callback})
 
@@ -273,7 +302,7 @@ class LogicThread(killable_threading.KillableThread):
       while (self.keep_alive):
         self.process_event_queue(0.5)  # Includes some blocking.
         if (not self.keep_alive): break
-        if (self.vlc_proc and self.vlc_proc.poll() is not None): break
+        #if (self.vlc_proc and self.vlc_proc.poll() is not None): break
         if (self.mygui.done is True): break
 
         if (self.countdown_to_time):
@@ -303,7 +332,27 @@ class LogicThread(killable_threading.KillableThread):
     except (Exception) as err:
       logging.error("Could not save credentials: %s" % str(err))
 
-  def process_event_queue(self, queue_timeout=0.5):
+  def process_event_queue(self, queue_timeout=None):
+    """Processes every pending event on the queue.
+
+    :param queue_timeout: Optionally block up to N seconds in the initial check.
+    """
+    action_name, arg_dict = None, None
+    first_pass = True
+    while(True):
+      try:
+        if (first_pass):
+          queue_block = True if (queue_timeout is not None and queue_timeout > 0) else False
+          action_name, arg_dict = self.event_queue.get(queue_block, queue_timeout)
+        else:
+          first_pass = False
+          action_name, arg_dict = self._event_queue.get_nowait()
+      except (Queue.Empty):
+        break
+      else:
+        self._process_event(action_name, arg_dict)
+
+  def _process_event(self, action_name, arg_dict):
     """Processes events queued via invoke_later().
 
     Most actions depend on the current PHASE and run in order.
@@ -324,13 +373,6 @@ class LogicThread(killable_threading.KillableThread):
     ACTION_SET_VLC_SOCKET(), when a socket to VLC (dis)connected.
     ACTION_REFOLLOW(), when a StreamThread disconnects.
     """
-    action_name, arg_dict = None, None
-    try:
-      queue_block = True if (queue_timeout is not None and queue_timeout > 0) else False
-      action_name, arg_dict = self.event_queue.get(queue_block, queue_timeout)
-    except (Queue.Empty):
-      return
-
     if (action_name == self.ACTION_LOAD_CREDS):
       if (self.phase not in [self.PHASE_INIT]): return
 
@@ -503,7 +545,6 @@ class LogicThread(killable_threading.KillableThread):
         self.followed_user = {"user_type":"user", "user_name":arg_dict["user_name"], "user_id":arg_dict["user_id"]}
 
         self.invoke_later(self.ACTION_COMPOSE, {})
-        self.invoke_later(self.ACTION_SPAWN_VLC, {})
       except (pytwit.TwitterException) as err:
         logging.error("%s" % str(err))
 
@@ -542,7 +583,6 @@ class LogicThread(killable_threading.KillableThread):
         self.followed_user = {"user_type":"sample"}
 
         self.invoke_later(self.ACTION_COMPOSE, {})
-        self.invoke_later(self.ACTION_SPAWN_VLC, {})
       except (pytwit.TwitterException) as err:
         logging.error("%s" % str(err))
 
@@ -624,22 +664,44 @@ class LogicThread(killable_threading.KillableThread):
           self.stream_thread = None
 
     elif (action_name == self.ACTION_SPAWN_VLC):
+      if (self.vlc_proc and self.vlc_proc.poll() is None):
+        logging.error("An instance of VLC is still running.")
+        self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: An instance of VLC is still running."})
+        return
+
       logging.info("Spawning VLC.")
       self.vlc_proc = spawn_vlc(self.vlc_path, global_config.INTF_LUA_NAME, global_config.vlc_port, global_config.osd_duration)
       self.cleanup_handler.add_proc(self.vlc_proc)
+
+      self.mygui.invoke_later(self.mygui.ACTION_SETUP_SPAWN_VLC, {"spawn_func":None})
 
       logging.info("Connecting to VLC on port %d." % global_config.vlc_port)
       def success_callback(arg_dict):
         self.invoke_later(self.ACTION_SET_VLC_SOCKET, {"socket":arg_dict["socket"]})
       def failure_callback(arg_dict):
         self.mygui.invoke_later(self.mygui.ACTION_WARN, {"message":"Error: Failed to connect to VLC."})
-
+        if (self.vlc_proc and self.vlc_proc.poll() is None):
+          logging.debug("Terminating unreachable VLC process.")
+          try:
+            self.vlc_proc.terminate()
+          except (Exception) as err:
+            pass
       connect_thread = killable_threading.SocketConnectThread("VLC", "127.0.0.1", global_config.vlc_port, 7, 2)
       connect_thread.set_success_callback(success_callback)
       connect_thread.set_failure_callback(failure_callback)
       connect_thread.start()
       self.cleanup_handler.add_thread(connect_thread)
       self.cleanup_handler.add_socket(connect_thread._socket)
+
+      def proc_done_callback():
+        if (connect_thread.isAlive()):
+          logging.info("VLC is no longer running. Aborting remaining connection attempts.")
+          connect_thread.stop_living()
+        self.invoke_later(self.ACTION_SET_VLC_SOCKET, {"socket":None})
+        self.mygui.invoke_later(self.mygui.ACTION_SETUP_SPAWN_VLC, {"spawn_func":self.vlc_spawn_callback})
+      procwatch_thread = killable_threading.ProcessWatchThread("VLC", self.vlc_proc, proc_done_callback)
+      procwatch_thread.start()
+      self.cleanup_handler.add_thread(procwatch_thread)
 
     elif (action_name == self.ACTION_SET_VLC_SOCKET):
       for arg, is_bad in [("socket", (lambda x:False))]:
@@ -652,9 +714,9 @@ class LogicThread(killable_threading.KillableThread):
         logging.error("Bad/missing tweets_thread when %s invoked %s." % (self.__class__.__name__, action_name))
       else:
         if (arg_dict["socket"] is not None):
-          self.tweets_thread.add_tweet_listener(self.vlc_control)
+          self.tweets_thread.add_tweet_listener(self.tweets_vlc_listener)
         else:
-          self.tweets_thread.remove_tweet_listener(self.vlc_control)
+          self.tweets_thread.remove_tweet_listener(self.tweets_vlc_listener)
 
     elif (action_name == self.ACTION_SEND_TWEET):
       if (self.phase not in [self.PHASE_COMPOSE]): return

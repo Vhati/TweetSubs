@@ -10,10 +10,14 @@ About
 and display any live @tweets mentioning that account as
 subtitles in VLC.
 
-Geographically separated people can schedule a video to play
-simultaneously, follow the same account, compose tweets, and
-see each other's commentary.
+  Geographically separated people can schedule a video to
+play simultaneously, follow the same account, compose tweets,
+and see each other's commentary.
 ( Example: MockTM Events http://twitter.com/MockTM )
+
+  Alternatively, if the video isn't playable in VLC,
+commentary can be sent to a window that can float over
+proprietary players.
 
 
 
@@ -39,6 +43,7 @@ timezone in the OS's preferences.
 Changes
 
 1.05 - Added "Ignore Users" option.
+       Added "Floating Commentary" window.
        Moved various classes and functions to their own lib modules.
 1.04 - Trivially changed negative millisecond lag notice to "0s" instead of "-0s".
 1.03 - Added a reconnect prompt when the followed Twitter stream disconnects.

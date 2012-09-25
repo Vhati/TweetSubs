@@ -24,7 +24,9 @@ class GuiApp(tk.Toplevel):
                     "ACTION_SWITCH_COUNTDOWN", "ACTION_SWITCH_FOLLOW",
                     "ACTION_SWITCH_COMPOSE", "ACTION_SWITCH_COMPOSE_NERFED",
                     "ACTION_COMPOSE_TEXT", "ACTION_WIDGETS_ENABLE",
-                    "ACTION_WARN", "ACTION_SETUP_IGNORE_USERS",
+                    "ACTION_WARN", "ACTION_NEW_TWEET",
+                    "ACTION_SETUP_IGNORE_USERS",
+                    "ACTION_SETUP_SPAWN_VLC",
                     "ACTION_DIE"]
     for x in self.ACTIONS: setattr(self, x, x)
     self.PHASES = ["PHASE_SPLASH", "PHASE_WELCOME", "PHASE_PIN",
@@ -32,6 +34,8 @@ class GuiApp(tk.Toplevel):
     for x in self.PHASES: setattr(self, x, x)
 
     self.MENU_IGNORE_USERS = "Ignore Users..."
+    self.MENU_COMMENTARY = "Floating Commentary..."
+    self.MENU_SPAWN_VLC = "Launch VLC..."
 
     self.VERSION = global_config.VERSION
 
@@ -43,12 +47,20 @@ class GuiApp(tk.Toplevel):
     self._menubar = tk.Menu(self)
     self._options_menu = tk.Menu(self._menubar, tearoff="no")
     self._options_menu.add_command(label=self.MENU_IGNORE_USERS, state="disabled")
+    self._options_menu.add_separator()
+    self._options_menu.add_command(label=self.MENU_COMMENTARY, state="disabled")
+    self._options_menu.add_command(label=self.MENU_SPAWN_VLC, state="disabled")
     self._menubar.add_cascade(label="Options",menu=self._options_menu,underline="0")
     self.config(menu=self._menubar)
 
     self._menu_funcs = {}   # Settable callbacks for menuitem clicks.
     self._menu_lookup = {}  # Lookup parent menus by menuitem labels.
     self._menu_lookup[self.MENU_IGNORE_USERS] = self._options_menu
+    self._menu_lookup[self.MENU_COMMENTARY] = self._options_menu
+    self._menu_lookup[self.MENU_SPAWN_VLC] = self._options_menu
+
+    self._caption_window = None
+    self.set_menu_callback(self.MENU_COMMENTARY, self._show_caption_window)
 
     self._menubar_sep = tk.Frame(self, borderwidth="1",relief="groove",height=2)
     self._menubar_sep.pack(fill="x",expand="yes")
@@ -98,6 +110,7 @@ class GuiApp(tk.Toplevel):
 
     self.wm_title("TweetSubs %s" % self.VERSION)
     self.state["phase"] = self.PHASE_SPLASH
+    self._update_menu_states()
     self.tmp_frame = tk.Frame(self._pane)
     self.tmp_frame.pack()
 
@@ -113,12 +126,16 @@ class GuiApp(tk.Toplevel):
 
     self.wm_title("TweetSubs %s" % self.VERSION)
     self.state["phase"] = self.PHASE_WELCOME
+    self._update_menu_states()
     self.tmp_frame = tk.Frame(self._pane)
     self.tmp_frame.pack()
 
     notice_str = ""
     notice_str += "This frontend will connect to Twitter, launch VLC, and\n"
     notice_str += "display live @tweets as subtitles over any video you watch.\n"
+    notice_str += "\n"
+    notice_str += "OR, if the video is not playable in VLC, commentary can be\n"
+    notice_str += "sent to a window that can float over proprietary players.\n"
     notice_str += "\n"
     notice_str += "There may be a slight delay as tweets reach you across the\n"
     notice_str += "internet, so DO NOT touch the seek bar or pause in response\n"
@@ -139,7 +156,7 @@ class GuiApp(tk.Toplevel):
     warning_frame = tk.Frame(self.tmp_frame, borderwidth="1",relief="sunken")
     warning_frame.pack(fill="x",expand="yes",pady=("10","0"))
 
-    warning_lbl = tk.Label(warning_frame, text="Note: Closing this window will kill VLC, and vice versa.")
+    warning_lbl = tk.Label(warning_frame, text="Note: Closing this window will kill VLC.")
     warning_lbl.pack(fill="x",expand="yes")
     self.state["warning_lbl"] = warning_lbl
 
@@ -151,6 +168,7 @@ class GuiApp(tk.Toplevel):
 
     self.wm_title("TweetSubs - PIN")
     self.state["phase"] = self.PHASE_PIN
+    self._update_menu_states()
     self.tmp_frame = tk.Frame(self._pane)
     self.tmp_frame.pack()
 
@@ -206,6 +224,7 @@ class GuiApp(tk.Toplevel):
 
     self.wm_title("TweetSubs - Countdown")
     self.state["phase"] = self.PHASE_COUNTDOWN
+    self._update_menu_states()
     self.tmp_frame = tk.Frame(self._pane)
     self.tmp_frame.pack()
 
@@ -271,6 +290,7 @@ class GuiApp(tk.Toplevel):
 
     self.wm_title("TweetSubs - Follow")
     self.state["phase"] = self.PHASE_FOLLOW
+    self._update_menu_states()
     self.tmp_frame = tk.Frame(self._pane)
     self.tmp_frame.pack()
 
@@ -316,6 +336,7 @@ class GuiApp(tk.Toplevel):
 
     self.wm_title("TweetSubs - Compose (as %s)" % src_user_name)
     self.state["phase"] = self.PHASE_COMPOSE
+    self._update_menu_states()
     self.tmp_frame = tk.Frame(self._pane)
     self.tmp_frame.pack()
 
@@ -356,7 +377,7 @@ class GuiApp(tk.Toplevel):
     warning_frame = tk.Frame(self.tmp_frame, borderwidth="1",relief="sunken")
     warning_frame.pack(fill="x",expand="yes",pady=("0","0"))
 
-    warning_lbl = tk.Label(warning_frame, text="")
+    warning_lbl = tk.Label(warning_frame, text="From the Options menu, pick \"Launch VLC\" or \"Floating Commentary\".")
     warning_lbl.pack(side="left",fill="x",expand="yes")
     self.state["warning_lbl"] = warning_lbl
 
@@ -436,6 +457,30 @@ class GuiApp(tk.Toplevel):
       self.tmp_frame = None
     self.state.clear()
 
+  def _update_menu_states(self):
+    """Toggles menus' disabled states depending on phase.
+
+    PHASE_COMPOSE: All menuitems with funcs are enabled.
+    Otherwise: All menuitems are disabled.
+    """
+    state_matched = False
+    if ("phase" in self.state):
+      if (self.state["phase"] == self.PHASE_COMPOSE):
+        state_matched = True
+        for menu_label in [self.MENU_IGNORE_USERS, self.MENU_COMMENTARY, self.MENU_SPAWN_VLC]:
+          if (menu_label not in self._menu_lookup): continue
+          parent_menu = self._menu_lookup[menu_label]
+          if (menu_label in self._menu_funcs and self._menu_funcs[menu_label] is not None):
+            parent_menu.entryconfigure(menu_label, state="normal", command=self._menu_funcs[menu_label])
+          else:
+            parent_menu.entryconfigure(menu_label, state="disabled")
+
+    if (state_matched is False):
+      for menu_label in [self.MENU_IGNORE_USERS, self.MENU_COMMENTARY, self.MENU_SPAWN_VLC]:
+        if (menu_label not in self._menu_lookup): continue
+        parent_menu = self._menu_lookup[menu_label]
+        parent_menu.entryconfigure(menu_label, state="disabled")
+
   def set_menu_callback(self, menu_label, func):
     """Associates a menuitem with a callback function, and toggles its disabled state.
 
@@ -446,12 +491,8 @@ class GuiApp(tk.Toplevel):
       logging.error("Attempted to set a callback on non-existent menuitem: %s." % menu_label)
       return
 
-    parent_menu = self._menu_lookup[menu_label]
     self._menu_funcs[menu_label] = func
-    if (func is not None):
-      parent_menu.entryconfigure(menu_label, state="normal", command=self._menu_funcs[menu_label])
-    else:
-      parent_menu.entryconfigure(menu_label, state="disabled")
+    self._update_menu_states()
 
   def center_window(self):
     """Centers this window on the screen.
@@ -476,12 +517,37 @@ class GuiApp(tk.Toplevel):
     if (b is True): self.attributes('-topmost', 1)
     else: self.attributes('-topmost', 0)
 
+  def _show_caption_window(self):
+    """Shows the floating commentary window and toggles the menuitem."""
+    if (self._caption_window is None):
+      self.set_menu_callback(self.MENU_COMMENTARY, None)
+      self._caption_window = tkwidgets.CaptionWindow(self, title="Floating Commentary - TweetSubs", delete_func=self._on_caption_window_deleted)
+      self._caption_window.get_text_area().configure(foreground="white", background="black")
+
+  def _on_caption_window_deleted(self):
+    """Toggles the menuitem when the floating commentary window closes."""
+    if (self._caption_window is not None):
+      self._caption_window = None
+      self.set_menu_callback(self.MENU_COMMENTARY, self._show_caption_window)
+
   def _on_delete(self):
     if (self._poll_queue_alarm_id is not None):
       self.after_cancel(self._poll_queue_alarm_id)
       self._root().quit()
 
   def process_event_queue(self, event):
+    """Processes every pending event on the queue."""
+    # With after() polling, always use get_nowait() to avoid blocking.
+    func_or_name, arg_dict = None, None
+    while (True):
+      try:
+        func_or_name, arg_dict = self._event_queue.get_nowait()
+      except (Queue.Empty) as err:
+        break
+      else:
+        self._process_event(func_or_name, arg_dict)
+
+  def _process_event(self, func_or_name, arg_dict):
     """Processes events queued via invoke_later().
 
     ACTION_SWITCH_WELCOME(next_func)
@@ -492,16 +558,11 @@ class GuiApp(tk.Toplevel):
     ACTION_SWITCH_COMPOSE_NERFED(src_user_name, countdown_to_time)
     ACTION_COMPOSE_TEXT(text)
     ACTION_WARN(message)
+    ACTION_NEW_TWEET(user_str, msg_str, tweet_json)
     ACTION_SETUP_IGNORE_USERS(get_all_users_func, get_ignored_users_func, set_ignored_users_func)
+    ACTION_SETUP_SPAWN_VLC(spawn_func)
     ACTION_DIE
     """
-    # With after() polling, use get_nowait() to avoid blocking.
-    func_or_name, arg_dict = None, None
-    try:
-      func_or_name, arg_dict = self._event_queue.get_nowait()
-    except (Queue.Empty) as err:
-      return
-
     def check_args(args):
       for arg in args:
         if (arg not in arg_dict):
@@ -548,6 +609,12 @@ class GuiApp(tk.Toplevel):
     elif (func_or_name == self.ACTION_WARN):
       if (check_args(["message"]) and "warning_lbl" in self.state):
         self.state["warning_lbl"].config(text=arg_dict["message"])
+    elif (func_or_name == self.ACTION_NEW_TWEET):
+      if (check_args(["user_str","msg_str","tweet_json"])):
+        if (self._caption_window is not None):
+          self._caption_window.clear()
+          self._caption_window.append_line("%s: %s" % (arg_dict["user_str"], arg_dict["msg_str"]))
+          self._caption_window.scroll_to_start()
     elif (func_or_name == self.ACTION_SETUP_IGNORE_USERS):
       if (check_args(["get_all_users_func","get_ignored_users_func","set_ignored_users_func"])):
         get_all_users_func = arg_dict["get_all_users_func"]
@@ -560,7 +627,7 @@ class GuiApp(tk.Toplevel):
             ignored_users = get_ignored_users_func()
 
             if (len(all_users) + len(ignored_users) == 0):
-              tkMessageBox.showinfo("Ignore Users", "No users to choose from.\nTry again later.")
+              self.invoke_later(self.ACTION_WARN, {"message":"No users to choose from. Try again later."})
               return
 
             current_ticks = {}
@@ -578,6 +645,14 @@ class GuiApp(tk.Toplevel):
           self.set_menu_callback(self.MENU_IGNORE_USERS, show_ignore_dialog)
         else:
           self.set_menu_callback(self.MENU_IGNORE_USERS, None)
+    elif (func_or_name == self.ACTION_SETUP_SPAWN_VLC):
+      if (check_args(["spawn_func"])):
+        spawn_func = arg_dict["spawn_func"]
+        if (spawn_func):
+          self.set_menu_callback(self.MENU_SPAWN_VLC, spawn_func)
+        else:
+          self.set_menu_callback(self.MENU_SPAWN_VLC, None)
+
     elif (func_or_name == self.ACTION_DIE):
       self._root().destroy()
 

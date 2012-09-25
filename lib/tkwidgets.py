@@ -1,14 +1,95 @@
 from datetime import datetime, timedelta
 import logging
 import re
+import ScrolledText
 import threading
+import tkFont
 import Tkinter as tk
 import tkMessageBox
 
 
-class CheckboxList(tk.Frame):
+class CaptionWindow(tk.Toplevel):
+  """A window with a vertically scrollable text area."""
   def __init__(self, parent, *args, **kwargs):
-    """Constructs a scrollable list of checkboxes.
+    """Constructor.
+
+    :param title: An optional window title.
+    :param delete_func: An optional callback for when this window closes.
+    """
+    self.custom_args = {"title":None, "delete_func":None}
+    for k in self.custom_args.keys():
+      if (k in kwargs):
+        self.custom_args[k] = kwargs[k]
+        del kwargs[k]
+    tk.Toplevel.__init__(self, parent, *args, **kwargs)
+
+    if (self.custom_args["title"]): self.wm_title(self.custom_args["title"])
+
+    self._size_font = tkFont.Font(family="Helvetica", size=11, weight=tkFont.BOLD)
+    self._caption_font = tkFont.Font(family="Helvetica", size=18, weight=tkFont.NORMAL)
+
+    _pane = tk.Frame(self)
+
+    size_frame = tk.Frame(_pane)
+    self._bigger_btn = tk.Button(size_frame, text="+", font=self._size_font, command=self._bigger_font)
+    self._bigger_btn.pack(fill="x",expand="no")
+    size_spacer = tk.Frame(size_frame)
+    size_spacer.pack(fill="y",expand="yes")
+    self._smaller_btn = tk.Button(size_frame, text=u"\u2013", font=self._size_font, command=self._smaller_font)
+    self._smaller_btn.pack(fill="x",expand="no")
+    size_frame.pack(fill="y",expand="no",side="left",padx=("0","5"))
+
+    self._text_area = ScrolledText.ScrolledText(_pane, relief="groove",width="35",height="4",wrap="word",font=self._caption_font)
+    self._text_area.pack(fill="both",expand="yes",side="right")
+
+    _pane.pack(fill="both",expand="yes",padx=("5","5"),pady=("5","5"))
+
+    self.wm_protocol("WM_DELETE_WINDOW", self._on_delete)
+
+  def get_text_area(self):
+    """Returns the ScrolledList widget."""
+    return self._get_text_area
+
+  def _bigger_font(self):
+    size = self._caption_font['size']
+    if (size >= 50): return
+    self._caption_font.configure(size=size+2)
+
+  def _smaller_font(self):
+    size = self._caption_font['size']
+    if (size <= 8): return
+    self._caption_font.configure(size=size-2)
+
+  def clear(self):
+    self._text_area.delete("1.0", tk.END)
+
+  def append_line(self, text):
+    """Appends to the text area.
+    If there is already text present, a newline will be added first.
+    """
+    if (len(self._text_area.get("1.0", tk.END)[:-1]) > 0):
+      self._text_area.insert(tk.END, "\n")
+    self._text_area.insert(tk.END, text)
+
+  def scroll_to_start(self):
+    self._text_area.see("1.0")
+
+  def scroll_to_end(self):
+    self._text_area.see(tk.END)
+
+  def get_text_area(self):
+    return self._text_area
+
+  def _on_delete(self):
+    if (self.custom_args["delete_func"] is not None):
+      self.custom_args["delete_func"]()
+    self.destroy()
+
+
+class CheckboxList(tk.Frame):
+  """A scrollable list of checkboxes."""
+  def __init__(self, parent, *args, **kwargs):
+    """Constructor.
 
     :param namelist: A dict of names and (0 or 1) values.
     :param metacols: The number of columns of options.
@@ -266,8 +347,9 @@ class CenteredDialog(tk.Toplevel):
 
 
 class CheckboxListDialog(CenteredDialog):
+  """A popup window containing a list of checkboxes."""
   def __init__(self, parent, *args, **kwargs):
-    """Constructs a popup window containing a list of checkboxes.
+    """Constructor.
 
     :param title: Window title (passed to superclass).
     :param namelist: A dict of names and (0 or 1) values.

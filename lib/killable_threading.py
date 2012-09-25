@@ -336,15 +336,38 @@ class TweetsThread(KillableThread):
       return self._ignored_users[:]
 
 
-class SocketConnectThread(KillableThread):
-  """Connects to a server and returns a socket.
-  :param description: A descriptive string for logging.
-  :param server_addr: Server's ip address string.
-  :param server_port: Server's port number.
-  :param retries: Maximum connection attempts.
-  :param retry_interval: Delay in seconds between retries.
+class TweetsListener():
+  """A base class for TweetsThread listeners.
+  Listeners' methods will be called by the TweetsThread,
+  so subclasses must be thread-safe and not block.
   """
+  def __init__(self):
+    object.__init__(self)
+
+  def on_tweet(self, user_str, msg_str, tweet_json):
+    """Responds to incoming tweets.
+    This should be overridden.
+
+    See: TweetsThread.add_tweet_listener().
+
+    :param user_str: The cleaned "screen_name" of the user.
+    :param msg_str: The cleaned "text" of the tweet.
+    :param tweet_json: The raw json object.
+    """
+    pass
+
+
+class SocketConnectThread(KillableThread):
+  """Connects to a server and returns a socket."""
   def __init__(self, description, server_addr, server_port, retries, retry_interval):
+    """Constructor.
+
+    :param description: A descriptive string for logging.
+    :param server_addr: Server's ip address string.
+    :param server_port: Server's port number.
+    :param retries: Maximum connection attempts.
+    :param retry_interval: Delay in seconds between retries.
+    """
     KillableThread.__init__(self)
     self._description = description
     self._server_addr = server_addr
@@ -352,6 +375,7 @@ class SocketConnectThread(KillableThread):
     self._retries = retries
     self._retry_interval = retry_interval
     self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self._socket.settimeout(5.0)
     self._success_func = None
     self._failure_func = None
 
@@ -368,6 +392,7 @@ class SocketConnectThread(KillableThread):
         break
       except (socket.error) as err:
         failed_connects += 1
+        logging.warning("%s (%s) failed to connect (%d/%d attempts): %s" % (self.__class__.__name__, self._description, failed_connects, self._retries, str(err)))
         if (failed_connects >= self._retries):
           logging.error("%s (%s) gave up repeated attempts to connect to %s:%s." % (self.__class__.__name__, self._description, self._server_addr, self._server_port))
           self.keep_alive = False
@@ -383,3 +408,29 @@ class SocketConnectThread(KillableThread):
     It will receive one arg, an empty dict.
     """
     self._failure_func = failure_func
+
+
+class ProcessWatchThread(KillableThread):
+  """Polls a subprocess and executes a callback when the process dies."""
+  def __init__(self, description, proc, done_func):
+    """Constructor.
+
+    :param description: A descriptive string for logging.
+    :param proc: A subprocess object.
+    :param done_func: A callback to execute when the process dies.
+    """
+    KillableThread.__init__(self)
+    self._description = description
+    self.proc = proc
+    self.done_func = done_func
+
+  def run(self):
+    if (self.proc is None): return
+
+    while (self.keep_alive):
+      self.nap(0.5)
+      if (not self.keep_alive): break
+      if (self.proc.poll() is not None):
+        logging.debug("%s (%s) is calling its done func..." % (self.__class__.__name__, self._description))
+        if (self.done_func): self.done_func()
+        break

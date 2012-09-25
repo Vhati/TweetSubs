@@ -4,6 +4,8 @@ A frontend to launch VLC, follow someone on Twitter, and display any live @tweet
 
 Geographically separated people can schedule a video to play simultaneously, follow the same account, compose tweets, and see each other's commentary. (Example: [MockTM Events](http://twitter.com/MockTM))
 
+Alternatively, if the video isn't playable in VLC, commentary can be sent to a window that can float over proprietary players.
+
 
 Requirements
 ------------
