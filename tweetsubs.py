@@ -508,7 +508,10 @@ class LogicThread(killable_threading.KillableThread):
           return
 
       try:
-        basic_info, _ = self.client.lookup_user(arg_dict["user_name"])
+        oauth_request = oauth.OAuthRequest.from_consumer_and_token(self.consumer, token=self.token, http_method='GET', http_url=self.client.LOOKUP_USER_URL, parameters={"screen_name":arg_dict["user_name"]})
+        oauth_request.sign_request(self.signature_method, self.consumer, self.token)
+
+        basic_info, _ = self.client.lookup_user(oauth_request)
         logging.info("Looked up Twitter user: %s = %s" % (basic_info["user_name"], basic_info["user_id"]))
         self.invoke_later(self.ACTION_FOLLOW_USER, {"user_name":basic_info["user_name"], "user_id":basic_info["user_id"]})
       except (pytwit.TwitterException) as err:

@@ -82,7 +82,7 @@ class TwitterOAuthClient(oauth.OAuthClient):
       body_str = response.read().rstrip('\r\n')
     except (httplib.HTTPException) as err:
       conn.close()
-      raise TwitterHTTPError("Request token fetching failed. Reason: %s", err)
+      raise TwitterHTTPError("Request token fetching failed. Reason: %s" % repr(err))
     if (response.status == 401):
       raise TwitterAuthError("Request token fetching failed. Server response (%d %s): %s" % (response.status, response.reason, body_str))
     elif (response.status != 200):
@@ -112,7 +112,7 @@ class TwitterOAuthClient(oauth.OAuthClient):
       body_str = response.read().rstrip('\r\n')
     except (httplib.HTTPException) as err:
       conn.close()
-      raise TwitterHTTPError("Access token fetching failed. Reason: %s", err)
+      raise TwitterHTTPError("Access token fetching failed. Reason: %s" % repr(err))
     if (response.status == 401):
       raise TwitterAuthError("Access token fetching failed. Server response (%d %s): %s" % (response.status, response.reason, body_str))
     elif (response.status != 200):
@@ -159,7 +159,7 @@ class TwitterOAuthClient(oauth.OAuthClient):
       body_str = response.read().rstrip('\r\n')
     except (httplib.HTTPException) as err:
       conn.close()
-      raise TwitterHTTPError("Token authorization failed. Reason: %s", err)
+      raise TwitterHTTPError("Token authorization failed. Reason: %s" % repr(err))
     if (response.status == 401):
       raise TwitterAuthError("Token authorization failed. Server response (%d %s): %s" % (response.status, response.reason, body_str))
     elif (response.status != 200):
@@ -183,7 +183,7 @@ class TwitterOAuthClient(oauth.OAuthClient):
       body_str = response.read().rstrip('\r\n')
     except (httplib.HTTPException) as err:
       conn.close()
-      raise TwitterHTTPError("Credentials verification failed. Reason: %s", err)
+      raise TwitterHTTPError("Credentials verification failed. Reason: %s" % repr(err))
     if (response.status == 401):
       raise TwitterAuthError("Credentials verification failed. Server response (%d %s): %s" % (response.status, response.reason, body_str))
     elif (response.status != 200):
@@ -193,7 +193,7 @@ class TwitterOAuthClient(oauth.OAuthClient):
     try:
       user_info = json.loads(body_str)
     except (ValueError) as err:
-      raise TwitterValueError("Credentials verification failed. Unable to parse server response (%s): %s" % (str(err), body_str))
+      raise TwitterValueError("Credentials verification failed. Unable to parse server response (%s): %s" % (repr(err), body_str))
 
     if ("id" in user_info and "screen_name" in user_info):
       basic_user_info = {"user_id":user_info["id"],"user_name":user_info["screen_name"]}
@@ -211,19 +211,22 @@ class TwitterOAuthClient(oauth.OAuthClient):
     per day on startup, and cache the result on disk. Calling this
     at all is optional. Hardcoded defaults should be sufficient.
 
+    :param oauth_request: A GET request, with no parameters.
     :returns: A dict of settings.
     :raises: TwitterHTTPError, TwitterValueError
     """
-    conn = self.get_connection(self.CONFIGURATION_URL)
+    if (oauth_request.http_method != "GET"): raise TwitterHTTPError("fetch_twitter_server_config() requires a GET request.")
+
+    conn = self.get_connection(oauth_request.http_url)
     response = None
     body_str = None
     try:
-      conn.request('GET', self.CONFIGURATION_URL)
+      conn.request(oauth_request.http_method, oauth_request.to_url())
       response = conn.getresponse()
       body_str = response.read().rstrip("\r\n")
     except (httplib.HTTPException) as err:
       conn.close()
-      raise TwitterHTTPError("Twitter config fetching failed. Reason: %s", err)
+      raise TwitterHTTPError("Twitter config fetching failed. Reason: %s" % repr(err))
     if (response.status != 200):
       raise TwitterHTTPError("Twitter config fetching failed. Server response (%d %s)." % (response.status, response.reason))
 
@@ -233,7 +236,7 @@ class TwitterOAuthClient(oauth.OAuthClient):
       self.server_config.clear()
       self.server_config.update(new_config)
     except (ValueError) as err:
-      raise TwitterValueError("Twitter user lookup failed. Unable to parse server response (%s): %s" % (str(err), body_str))
+      raise TwitterValueError("Twitter user lookup failed. Unable to parse server response (%s): %s" % (repr(err), body_str))
 
     return self.server_config
 
@@ -254,7 +257,7 @@ class TwitterOAuthClient(oauth.OAuthClient):
       body_str = response.read().rstrip("\r\n")
     except (httplib.HTTPException) as err:
       conn.close()
-      raise TwitterHTTPError("Twitter %s fetching failed. Reason: %s", (description, str(err)))
+      raise TwitterHTTPError("Twitter %s fetching failed. Reason: %s", (description, repr(err)))
     if (response.status != 200):
       raise TwitterHTTPError("Twitter %s fetching failed. Server response (%d %s)." % (description, response.status, response.reason))
 
@@ -263,7 +266,7 @@ class TwitterOAuthClient(oauth.OAuthClient):
       result = json.loads(body_str)
       return result
     except (ValueError) as err:
-      raise TwitterValueError("Twitter %s fetching failed. Unable to parse server response (%s): %s" % (description, str(err), body_str))
+      raise TwitterValueError("Twitter %s fetching failed. Unable to parse server response (%s): %s" % (description, repr(err), body_str))
 
   def get_sanitized_tweet(self, text, strip_urls=True):
     """Applies some regexes to clean up a tweet before sending.
@@ -286,9 +289,11 @@ class TwitterOAuthClient(oauth.OAuthClient):
     No need to encode the message text before calling this.
     The MAX_TWEET_LENGTH applies to the original text's UTF-8 char count, without encoding.
 
-    :param oauth_request: A request, with 'status'=string parameter.
+    :param oauth_request: A POST request, with 'status'=string parameter.
     :raises: TwitterAuthError, TwitterHTTPError, TwitterValueError
     """
+    if (oauth_request.http_method != "POST"): raise TwitterHTTPError("send_tweet() requires a POST request.")
+
     text = oauth_request.get_parameter("status")
     if (len(text) == 0): return
     if (len(text) > self.MAX_TWEET_LENGTH): raise TwitterValueError("Tweet is too long (%d)." % len(text))
@@ -304,31 +309,31 @@ class TwitterOAuthClient(oauth.OAuthClient):
       body_str = response.read().rstrip("\r\n")
     except (httplib.HTTPException) as err:
       conn.close()
-      raise TwitterHTTPError("Tweet send failed. Reason: %s", err)
+      raise TwitterHTTPError("Tweet send failed. Reason: %s" % repr(err))
     if (response.status != 200):
       raise TwitterAuthError("Tweet send failed. Server response (%d %s): %s" % (response.status, response.reason, body_str))
 
     return
 
-  def lookup_user(self, user_name):
+  def lookup_user(self, oauth_request):
     """Gets info about a Twitter account.
 
+    :param oauth_request: A GET request, with 'screen_name'=string parameter.
     :returns: Two dicts of user info: (user_id/user_name) and (everything the server returned).
-    :raises: TwitterHTTPError, TwitterValueError
+    :raises: TwitterAuthError, TwitterHTTPError, TwitterValueError
     """
-    if (not re.match("^[a-zA-Z0-9_]{1,15}$", user_name)):
-      raise TwitterValueError("Invalid Twitter user: %s" % user_name)
+    if (oauth_request.http_method != "GET"): raise TwitterHTTPError("lookup_user() requires a GET request.")
 
-    conn = self.get_connection(self.LOOKUP_USER_URL)
+    conn = self.get_connection(oauth_request.http_url)
     response = None
     body_str = None
     try:
-      conn.request('GET', self.LOOKUP_USER_URL +("?screen_name=%s" % user_name))
+      conn.request(oauth_request.http_method, oauth_request.to_url())
       response = conn.getresponse()
       body_str = response.read().rstrip("\r\n")
     except (httplib.HTTPException) as err:
       conn.close()
-      raise TwitterHTTPError("Twitter user lookup failed. Reason: %s", err)
+      raise TwitterHTTPError("Twitter user lookup failed. Reason: %s" % repr(err))
     if (response.status != 200):
       raise TwitterHTTPError("Twitter user lookup failed. Server response (%d %s)." % (response.status, response.reason))
 
@@ -336,7 +341,7 @@ class TwitterOAuthClient(oauth.OAuthClient):
     try:
       user_info = json.loads(body_str)
     except (ValueError) as err:
-      raise TwitterValueError("Twitter user lookup failed. Unable to parse server response (%s): %s" % (str(err), body_str))
+      raise TwitterValueError("Twitter user lookup failed. Unable to parse server response (%s): %s" % (repr(err), body_str))
 
     if ("id" in user_info and "screen_name" in user_info):
       basic_user_info = {"user_id":user_info["id"],"user_name":user_info["screen_name"]}
@@ -349,6 +354,7 @@ class TwitterOAuthClient(oauth.OAuthClient):
   def access_user_stream(self, oauth_request):
     """Opens an on-going connection to follow a Twitter user, and all related replies.
 
+    :param oauth_request: A POST request, with 'follow'=userid and 'delimited'='length' parameters.
     :returns: An HTTPConnection and HTTPResponse, which should be read immediately.
     :raises: TwitterAuthError, TwitterHTTPError
     """
@@ -362,7 +368,7 @@ class TwitterOAuthClient(oauth.OAuthClient):
       response = conn.getresponse()
     except (httplib.HTTPException) as err:
       conn.close()
-      raise TwitterHTTPError("Connecting to user stream failed. Reason: %s", err)
+      raise TwitterHTTPError("Connecting to user stream failed. Reason: %s" % repr(err))
     if (response.status == 401):
       raise TwitterAuthError("Connecting to user stream failed. Server response (%d %s)." % (response.status, response.reason))
     elif (response.status != 200):
@@ -373,6 +379,7 @@ class TwitterOAuthClient(oauth.OAuthClient):
   def access_sample_stream(self, oauth_request):
     """Opens an on-going connection to follow the Twitter sample stream.
 
+    :param oauth_request: A POST request, with 'delimited'='length' parameter.
     :returns: An HTTPConnection and HTTPResponse, which should be read immediately.
     :raises: TwitterAuthError, TwitterHTTPError
     """
@@ -386,7 +393,7 @@ class TwitterOAuthClient(oauth.OAuthClient):
       response = conn.getresponse()
     except (httplib.HTTPException) as err:
       conn.close()
-      raise TwitterHTTPError("Connecting to sample stream failed. Reason: %s", err)
+      raise TwitterHTTPError("Connecting to sample stream failed. Reason: %s" % repr(err))
     if (response.status == 401):
       raise TwitterAuthError("Connecting to sample stream failed. Server response (%d %s)." % (response.status, response.reason))
     elif (response.status != 200):
