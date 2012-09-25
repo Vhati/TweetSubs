@@ -27,6 +27,7 @@ class CaptionWindow(tk.Toplevel):
 
     self._size_font = tkFont.Font(family="Helvetica", size=11, weight=tkFont.BOLD)
     self._caption_font = tkFont.Font(family="Helvetica", size=18, weight=tkFont.NORMAL)
+    self._flash_alarm_id = None
 
     _pane = tk.Frame(self)
 
@@ -80,9 +81,21 @@ class CaptionWindow(tk.Toplevel):
   def get_text_area(self):
     return self._text_area
 
+  def flash_message(self, text, milliseconds):
+    """Replaces all visible text, then clears after a delay."""
+    self.clear()
+    self.append_line(text)
+    self.scroll_to_start()
+    if (self._flash_alarm_id is not None):
+      self.after_cancel(self._flash_alarm_id)
+      self._flash_alarm_id = None
+    self._flash_alarm_id = self.after(milliseconds, self.clear)
+
   def _on_delete(self):
     if (self.custom_args["delete_func"] is not None):
       self.custom_args["delete_func"]()
+    if (self._flash_alarm_id is not None):
+      self.after_cancel(self._flash_alarm_id)
     self.destroy()
 
 

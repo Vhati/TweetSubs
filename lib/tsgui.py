@@ -612,9 +612,7 @@ class GuiApp(tk.Toplevel):
     elif (func_or_name == self.ACTION_NEW_TWEET):
       if (check_args(["user_str","msg_str","tweet_json"])):
         if (self._caption_window is not None):
-          self._caption_window.clear()
-          self._caption_window.append_line("%s: %s" % (arg_dict["user_str"], arg_dict["msg_str"]))
-          self._caption_window.scroll_to_start()
+          self._caption_window.flash_message("%s: %s" % (arg_dict["user_str"], arg_dict["msg_str"]), global_config.osd_duration*1000)
     elif (func_or_name == self.ACTION_SETUP_IGNORE_USERS):
       if (check_args(["get_all_users_func","get_ignored_users_func","set_ignored_users_func"])):
         get_all_users_func = arg_dict["get_all_users_func"]
