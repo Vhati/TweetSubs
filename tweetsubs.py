@@ -84,7 +84,7 @@ except (Exception) as err:
 
 
 
-class VLCControl():
+class VLCControl(object):
   """Sends commands to VLC over a socket to a lua interface."""
   def __init__(self):
     self._socket_lock = threading.RLock()

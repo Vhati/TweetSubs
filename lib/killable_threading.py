@@ -158,7 +158,7 @@ class StreamThread(KillableThread):
     self._failure_func = failure_func
 
 
-class StreamLines():
+class StreamLines(object):
   """A thread-safe FIFO stack that can be appended and popped."""
 
   def __init__(self):
@@ -336,7 +336,7 @@ class TweetsThread(KillableThread):
       return self._ignored_users[:]
 
 
-class TweetsListener():
+class TweetsListener(object):
   """A base class for TweetsThread listeners.
   Listeners' methods will be called by the TweetsThread,
   so subclasses must be thread-safe and not block.

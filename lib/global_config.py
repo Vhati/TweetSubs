@@ -16,7 +16,7 @@ osd_duration = 7
 vlc_port = 27555
 
 
-VERSION = "1.05"
+VERSION = "1.06"
 INTF_LUA_NAME = "tweetsubs_cli.lua"  # VLC panics if this has a hyphen!?
 CONSUMER_KEY = "y5Okw5ltA6PUe9H1uumA3w"
 CONSUMER_SECRET = "a0r1x7fwbepzaxkaweafGU1Xrpfe6hDFfCnVToUbU"

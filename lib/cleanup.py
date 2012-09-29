@@ -10,7 +10,7 @@ import threading
 import time
 
 
-class CleanupHandler():
+class CleanupHandler(object):
   """A base class for thread-safe exit/interrupt operations."""
 
   def __init__(self):

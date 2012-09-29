@@ -1,4 +1,4 @@
-TweetSubs v1.05
+TweetSubs v1.06
 
 Author:
   David Millis (tvtronix@yahoo.com)
