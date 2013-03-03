@@ -92,11 +92,11 @@ class GuiApp(tk.Toplevel):
       self._clpbrd_menu.tk.call("tk_popup", self._clpbrd_menu, e.x_root, e.y_root)
     self.bind_class("Entry", "<Button-3><ButtonRelease-3>", show_clpbrd_menu)
     self.bind_class("Text", "<Button-3><ButtonRelease-3>", show_clpbrd_menu)
-    #self.bind("<<EventEnqueued>>", self.process_event_queue)
+    #self.bind("<<EventEnqueued>>", self._process_event_queue)
     self.wm_protocol("WM_DELETE_WINDOW", self._on_delete)
 
     def poll_queue():
-      self.process_event_queue(None)
+      self._process_event_queue(None)
       self._poll_queue_alarm_id = self.after(100, self._poll_queue)
     self._poll_queue_alarm_id = None
     self._poll_queue = poll_queue
@@ -533,9 +533,9 @@ class GuiApp(tk.Toplevel):
   def _on_delete(self):
     if (self._poll_queue_alarm_id is not None):
       self.after_cancel(self._poll_queue_alarm_id)
-      self._root().quit()
+    self._root().quit()
 
-  def process_event_queue(self, event):
+  def _process_event_queue(self, event):
     """Processes every pending event on the queue."""
     # With after() polling, always use get_nowait() to avoid blocking.
     func_or_name, arg_dict = None, None
@@ -652,10 +652,13 @@ class GuiApp(tk.Toplevel):
           self.set_menu_callback(self.MENU_SPAWN_VLC, None)
 
     elif (func_or_name == self.ACTION_DIE):
+      # Destruction awaits. Nothing more to do.
+      with self._event_queue.mutex:
+        self._event_queue.queue.clear()
       self._root().destroy()
 
   def invoke_later(self, func_or_name, arg_dict):
-    """Schedules an action to occur in this thread (thread-safe)."""
+    """Schedules an action to occur in this thread. (thread-safe)"""
     self._event_queue.put((func_or_name, arg_dict))
     # The queue will be polled eventually by an after() alarm.
 

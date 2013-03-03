@@ -18,6 +18,7 @@ This file does not need to be edited by users.
 
 
 # Do some basic imports, and set up logging to catch ImportError.
+import inspect
 import locale
 import logging
 import os
@@ -26,27 +27,37 @@ import sys
 if (__name__ == "__main__"):
   locale.setlocale(locale.LC_ALL, "")
 
-  # Go to the script dir (primary module search path; blank if cwd).
-  if (sys.path[0]): os.chdir(sys.path[0])
+  # Tkinter chokes on non-US locales with commas for decimal points.
+  #   http://bugs.python.org/issue10647
+  #   Fixed in Python 3.2.
+  #
+  locale.setlocale(locale.LC_NUMERIC, "C")  # Use period for numbers.
+
+  # Get the un-symlinked, absolute path to this module.
+  self_folder = os.path.realpath(os.path.abspath(os.path.split(inspect.getfile( inspect.currentframe() ))[0]))
+  if (self_folder not in sys.path): sys.path.insert(0, self_folder)
+
+  # Go to this module's dir.
+  os.chdir(self_folder)
 
   logger = logging.getLogger()
   logger.setLevel(logging.DEBUG)
 
   logstream_handler = logging.StreamHandler()
-  logger.addHandler(logstream_handler)
   logstream_formatter = logging.Formatter("%(levelname)s: %(message)s")
   logstream_handler.setFormatter(logstream_formatter)
   logstream_handler.setLevel(logging.INFO)
+  logger.addHandler(logstream_handler)
 
-  logfile_handler = logging.FileHandler("log.txt", mode="w")
-  logger.addHandler(logfile_handler)
+  logfile_handler = logging.FileHandler(os.path.join(self_folder, "log.txt"), mode="w")
   logfile_formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s", "%Y-%m-%d %H:%M:%S")
   logfile_handler.setFormatter(logfile_formatter)
+  logger.addHandler(logfile_handler)
 
   # __main__ stuff is continued at the end of this file.
 
 
-# Import everything else (tkinter may be absent in some environments)
+# Import everything else (tkinter may be absent in some environments).
 try:
   import ConfigParser
   import ctypes
@@ -300,7 +311,7 @@ class LogicThread(killable_threading.KillableThread):
 
 
       while (self.keep_alive):
-        self.process_event_queue(0.5)  # Includes some blocking.
+        self._process_event_queue(0.5)  # Includes some blocking.
         if (not self.keep_alive): break
         #if (self.vlc_proc and self.vlc_proc.poll() is not None): break
         if (self.mygui.done is True): break
@@ -315,8 +326,8 @@ class LogicThread(killable_threading.KillableThread):
 
     except (Exception) as err:
       logging.exception("Unexpected exception in %s." % self.__class__.__name__)  #raise
-      self.keep_alive = False
 
+    self.keep_alive = False
     self.cleanup_handler.cleanup()
 
 
@@ -332,7 +343,7 @@ class LogicThread(killable_threading.KillableThread):
     except (Exception) as err:
       logging.error("Could not save credentials: %s" % str(err))
 
-  def process_event_queue(self, queue_timeout=None):
+  def _process_event_queue(self, queue_timeout=None):
     """Processes every pending event on the queue.
 
     :param queue_timeout: Optionally block up to N seconds in the initial check.
@@ -346,7 +357,7 @@ class LogicThread(killable_threading.KillableThread):
           action_name, arg_dict = self.event_queue.get(queue_block, queue_timeout)
         else:
           first_pass = False
-          action_name, arg_dict = self._event_queue.get_nowait()
+          action_name, arg_dict = self.event_queue.get_nowait()
       except (Queue.Empty):
         break
       else:
@@ -754,7 +765,7 @@ class LogicThread(killable_threading.KillableThread):
       self.vlc_control.play()
 
   def invoke_later(self, action_name, arg_dict):
-    """Schedules an action to occur in this thread (thread-safe)."""
+    """Schedules an action to occur in this thread. (thread-safe)"""
     self.event_queue.put((action_name, arg_dict))
 
 
@@ -863,7 +874,6 @@ def spawn_vlc(vlc_path, intf_lua_name, vlc_port, osd_duration):
 
 def main():
   cleanup_handler = None
-  mygui = None
 
   try:
     logging.info("TweetSubs %s (on %s)" % (global_config.VERSION, platform.platform(aliased=True, terse=False)))
@@ -896,13 +906,16 @@ def main():
     logic_thread = LogicThread(mygui, cleanup_handler, tweetsubs_data_dir, vlc_path)
     logic_thread.start()
 
-    root.mainloop()
+    try:
+      root.mainloop()
+    finally:
+      mygui.done = True
 
   except (Exception) as err:
     logging.exception(err)  #raise
 
-  if (mygui is not None): mygui.done = True
-  if (cleanup_handler is not None): cleanup_handler.cleanup()
+  finally:
+    if (cleanup_handler is not None): cleanup_handler.cleanup()
 
 
 

@@ -27,11 +27,12 @@ class CleanupHandler(object):
       # Handle console window closing.
       #   http://msdn.microsoft.com/en-us/library/ms686016(VS.85).aspx
       #   http://msdn.microsoft.com/en-us/library/ms683242(v=vs.85).aspx
+      CTRL_C_EVENT = 0
       CTRL_CLOSE_EVENT = 2
 
       @ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
       def win_ctrlhandler(dwCtrlType):
-        if (dwCtrlType == CTRL_CLOSE_EVENT):
+        if (dwCtrlType in [CTRL_C_EVENT, CTRL_CLOSE_EVENT]):
           logging.info("ConsoleCtrlHandler wants to exit!")
           self.cleanup()
           return True  # Consume the event to thwart the default handler.
@@ -57,10 +58,11 @@ class CleanupHandler(object):
     # If a signal handler called this, we're in MainThread,
     #   blocking mainloop(), so do cleaning up in a separate thread.
     t = threading.Thread(target=self._cleanup, name="CleanupWorker")
+    t.daemon = False  # Don't trust inheritance from current thread.
     t.start()
 
   def _cleanup(self):
-    """The acutal cleanup code. Subclasses should override this."""
+    """The actual cleanup code. Subclasses should override this."""
     os._exit(0)
 
 
