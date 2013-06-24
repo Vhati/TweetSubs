@@ -42,6 +42,7 @@ timezone in the OS's preferences.
 
 Changes
 
+1.06 - Switched to Twitter 1.1 API.
 1.05 - Added "Ignore Users" option.
        Added "Floating Commentary" window.
        Fixed Twitter user lookup (they changed their API a little).
