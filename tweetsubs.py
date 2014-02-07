@@ -864,6 +864,8 @@ def spawn_vlc(vlc_path, intf_lua_name, vlc_port, osd_duration):
   # As of Python 3.3, std streams can be set to subprocess.DEVNULL
   fnull = open(os.devnull, 'w')  # Linux '/dev/null' or Windows nul
   command = [vlc_path]
+  command.extend(["--video-title-show"])
+  command.extend(["--video-title-timeout", "1"])
   command.extend(["--extraintf", "luaintf"])
   command.extend(["--lua-intf", intf_lua_basename])
   command.extend(["--lua-config", ("%s={host='127.0.0.1:%d',osd_duration=%d}" % (intf_lua_basename, vlc_port, osd_duration))])
