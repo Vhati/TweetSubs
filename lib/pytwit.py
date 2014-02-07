@@ -33,17 +33,17 @@ class TwitterOAuthClient(oauth.OAuthClient):
   def __init__(self):
     self.MAX_TWEET_LENGTH = 140
 
-    self.REQUEST_TOKEN_URL = "http://api.twitter.com/oauth/request_token"
-    self.ACCESS_TOKEN_URL = "http://api.twitter.com/oauth/access_token"
-    self.AUTHORIZATION_URL = "http://api.twitter.com/oauth/authorize"
-    self.VERIFY_CREDENTIALS_URL = "http://api.twitter.com/1.1/account/verify_credentials.json"
+    self.REQUEST_TOKEN_URL = "https://api.twitter.com/oauth/request_token"
+    self.ACCESS_TOKEN_URL = "https://api.twitter.com/oauth/access_token"
+    self.AUTHORIZATION_URL = "https://api.twitter.com/oauth/authorize"
+    self.VERIFY_CREDENTIALS_URL = "https://api.twitter.com/1.1/account/verify_credentials.json"
 
-    self.HOME_TIMELINE_URL = "http://api.twitter.com/1.1/statuses/home_timeline.json"
-    self.LOOKUP_USER_URL = "http://api.twitter.com/1.1/users/show.json"
+    self.HOME_TIMELINE_URL = "https://api.twitter.com/1.1/statuses/home_timeline.json"
+    self.LOOKUP_USER_URL = "https://api.twitter.com/1.1/users/show.json"
     self.FOLLOW_USER_URL = "https://stream.twitter.com/1.1/statuses/filter.json"
     self.FOLLOW_SAMPLE_URL = "https://stream.twitter.com/1.1/statuses/sample.json"
-    self.CONFIGURATION_URL = "http://api.twitter.com/1.1/help/configuration.json"
-    self.SEND_TWEET_URL = "http://api.twitter.com/1.1/statuses/update.json"
+    self.CONFIGURATION_URL = "https://api.twitter.com/1.1/help/configuration.json"
+    self.SEND_TWEET_URL = "https://api.twitter.com/1.1/statuses/update.json"
 
     self.server_config = {"short_url_length":20,
                           "short_url_length_https":21}
