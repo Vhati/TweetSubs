@@ -700,7 +700,7 @@ class LogicThread(killable_threading.KillableThread):
             self.vlc_proc.terminate()
           except (Exception) as err:
             pass
-      connect_thread = killable_threading.SocketConnectThread("VLC", "127.0.0.1", global_config.vlc_port, 7, 2)
+      connect_thread = killable_threading.SocketConnectThread("VLC", "127.0.0.1", global_config.vlc_port, 10, 3)
       connect_thread.set_success_callback(success_callback)
       connect_thread.set_failure_callback(failure_callback)
       connect_thread.start()
