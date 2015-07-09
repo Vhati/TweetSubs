@@ -4,7 +4,7 @@
 TweetSubs - A frontend to launch VLC, connect to Twitter,
 and display live @tweets as subtitles.
 
-Copyright (C) 2012 David Millis
+Copyright (C) 2015 David Millis
 See license.txt for the GNU GENERAL PUBLIC LICENSE
 
 Requires:
